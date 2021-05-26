@@ -1,0 +1,237 @@
+---
+title: 'Southern Water Leakage Root Cause Analysis - Hypothesis 1: Weather and Season
+  Variations'
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    number_sections: yes
+    theme: yeti
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  word_document:
+    toc: yes
+---
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+#reading in librarys
+library(tidyverse)
+library(dplyr)
+library(leaflet)
+library(gridExtra)
+library(data.table)
+library(modelr)
+library(knitr)
+library(ggplot2)
+library(scales)
+library(mapview)
+library(sp)
+library(sf)
+library(tmap)
+library(lubridate)
+library(zoo)
+library(latex2exp)
+
+
+
+# If running script offline set to TRUE. If in EDA set to FALSE
+offline <- TRUE
+
+# Load in Files
+if(offline == TRUE){
+  args <- c("",
+            "Consumption2017-18.csv",
+            "consumption6 TO.csv",
+            "west1718.csv",
+            "east1718.csv",
+            "central1718.csv",
+            "freeze events 2 TO.csv",
+            "freeze events TO.csv",
+            "Freeze events Month and Year.csv",
+            "Non Freeze events Month and Year.csv"
+       )
+}else{
+  args <- commandArgs(trailingOnly = TRUE)
+  setwd(args[1])
+}
+consumption <- read.csv(args[2], header = FALSE)
+consumption6 <- fread(args[3], header=TRUE, stringsAsFactors=FALSE)
+number2w <- fread(args[4], header=TRUE, stringsAsFactors=FALSE)
+number2e <- fread(args[5], header=TRUE, stringsAsFactors=FALSE)
+number2c <- fread(args[6], header=TRUE, stringsAsFactors=FALSE)
+both_3 <- fread(args[7], header=TRUE, stringsAsFactors=FALSE)
+both_vn <- fread(args[8], header=TRUE, stringsAsFactors=FALSE)
+vn.9 <- fread(args[9], header=TRUE, stringsAsFactors=FALSE)
+vn.10 <- fread(args[10], header=TRUE, stringsAsFactors=FALSE)
+
+SEAMScolours <- c("#1F497D", "#C2332F", "#FFC000", "#00B050", "#F5750B", "#399BB6",
+                  "#999999", "#0072B2", "#D55E00", "#E69F00", "#009E73", "#56B4E9",
+                  "#CC79A7", "#F0E442")
+
+#setting ggplot 
+gg <- theme_bw() +
+  theme(legend.position = "bottom") 
+
+```
+
+**Version 1.0** 
+
+# **Executive Summary**
+
+It is known that there exist seasonal changes in patterns of consumption, and it is also believed that leakage varies seasonally.  The aim of this hypothesis is to assess these seasonal variations, and assist Southern Water in determining whether consumption may be misattributed as leakage, or vice versa.
+
+An example comparison of consumption to daily temperatures has been produced, and additionally, estimated leakage has been compared between relatively cold and relatively warm winter months.  It is already known to Southern Water that freeze-thaw events cause a short-term increase in leakage.  This report details some evidence to corroborate the opinion that leakage has not decreased as much as expected since the 'Beast from the East' extreme weather event of early 2018.
+
+# **Experiments**
+
+## **Hypothesis 1.1: Seasonal Consumption**
+
+It is known that consumption varies seasonally, and this is likely to be related to temperature.  The aim of this hypothesis is to demonstrate this.
+
+## **Hypothesis 1.2: Freeze-Thaw Events**
+
+It is hypothesised that freeze-thaw events contribute to increases in leakage; the aim of this experiment is to investigate this.
+
+
+
+# **Data**
+
+The following datasets are used in the investigation of this hypothesis:
+
+## **Consumption Data (2016-19)**
+
+This data was supplied by Southern Water, and covers the period from 1 April 2016 to 31 March 2019.  The data is based on meter readings, with consumption derived based on the differences between readings.  Therefore, at the start and ends of this period, the sample size becomes smaller, and therefore, investigations were focussed on the middle year of this data, 1 April 2017 to 31 March 2018, for which an average consumption per property, per day, could be derived.
+
+## **Temperature Data**
+
+This data summarises minimum, mean and maximum temperatures recorded in each of the West, Central and East zones on a daily basis.
+
+## **DMA Nightflow Data**
+
+This data was sourced from the Nightflow Mastersheet Workbook, detailing monthly Nightflow volumes from 2015 to 2018 inclusive.
+
+
+
+# **Results**
+
+## **Hypothesis 1.1: Seasonal Consumption**
+
+The relationship between consumption and temperature is summarised below.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide', fig.height=10, fig.width=10}
+
+consumption6west <- consumption6 %>% filter(Region == "west")
+consumption6east <- consumption6 %>% filter(Region == "east")
+consumption6central <- consumption6 %>% filter(Region == "central")
+x6 <- seq.Date(ymd("2017-04-01"), by = 1, length.out = 365)
+result6 <- data.frame(day = x6)
+avgdailyuse <- c()
+consumption6west <- as.data.frame(consumption6west)
+consumption6east <- as.data.frame(consumption6east)
+consumption6central <- as.data.frame(consumption6central)
+both_3$Date1 <- ymd(both_3$Date1)
+number2w$day <- ymd(number2w$day)
+number2e$day <- ymd(number2e$day)
+number2c$day <- ymd(number2c$day)
+w7w <- both_3 %>% filter(ID == "west") %>% arrange(Date1) %>% filter(between(Year1, 2017, 2018)) %>% filter(between(row_number(), 91, 455))
+w7e <- both_3 %>% filter(ID == "east") %>% arrange(Date1) %>% filter(between(Year1, 2017, 2018)) %>% filter(between(row_number(), 91, 455))
+w7c <- both_3 %>% filter(ID == "central") %>% arrange(Date1) %>% filter(between(Year1, 2017, 2018)) %>% filter(between(row_number(), 91, 455))
+number2 <- rbind(number2w,number2e,number2c)
+w7 <- rbind(w7w,w7e,w7c)
+
+
+w6plot <- ggplot(number2) +
+  geom_line(aes(x = day, y = avgdailyuse, col = Region),size=1.3) + 
+  labs(title = "Derived Consumption/Day", y = "Average Daily Use /m3", x = "") + gg +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_date(labels = date_format("%b-%y"), breaks = "2 months") + 
+  scale_y_continuous(limits = c(0.270,0.297)) + 
+  facet_wrap(~ Region, nrow = 3, ncol = 1, scales = "free_y")
+
+
+w7plot <- ggplot(w7) +
+  geom_line(aes(x = Date1, y = Value, col = ID), size=1.3) + 
+  labs(title = "Average Daily Temperature", y = "Temperature °C", x = "") + gg +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_date(labels = date_format("%b-%y"), breaks = "2 months") + 
+  scale_y_continuous(limits = c(-5,26))+ 
+  facet_wrap(~ ID, nrow = 3, ncol = 1, scales = "free_y")
+
+
+grid.arrange(w7plot,w6plot,ncol=2)
+
+```
+
+## **Hypothesis 1.2: Freeze-Thaw Events**
+
+In order to assess the impact of freeze-thaw events on leakage, nightflow data was analysed in the context of temperature data.  Analysis was carried out for the calendar years from 2015 to 2018 inclusive, for which Nightflow data has been provided.  Calendar months in which the daily average temperature (in any of the West, Central and East regions) was below zero on at least one day were classed as months in which a freeze-thaw event occurred.  The total nightflow, across all DMAs, in these months was compared to the total nightflow in months with no freeze-thaw event.  In order to remove the effect of seasonal variation due to other factors, the latter includes only the months of January, February and March (as no freeze-thaw events were recorded outside of these calendar months).
+
+It is therefore noticeable, as visualised below, that nightflow is higher in months where freeze-thaw events are likely to have taken place, indicating the possible extent of short-term leakage increases.  For reference, these months are:
+
+* February 2015
+* January 2017
+* February 2018
+* March 2018
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+both_vn %>%
+  group_by(Freeze.events) %>% 
+  summarise(averages = sum(averages)/length(averages)) %>% 
+  ggplot(aes(x=Freeze.events, y=averages,group=1),  col = SEAMScolours[1]) + 
+  labs(title = "Nightflow in relation to Freeze-Thaw Events", x = "Freeze-Thaw Events", y = "Average of Monthly Nightflow Totals (all DMAs)")  +
+  geom_bar(stat = "identity", show.legend = FALSE,fill = c("darkgreen", "cornflowerblue")) + theme_bw() +
+  scale_y_continuous(labels = function(x){paste0(x/1000, 'K')}) 
+
+```
+
+The graphs below illustrate the change in total Nightflow across the network in the first six months of each calendar year.  There is generally a peak in Nightflow (and therefore, it is assumed, leakage) each time freezing temperatures occur, as per the graph above, followed by a decrease.  It is noticeable that the Nightflow position at the start of the calendar year increased year-on-year from 2015 to 2017.  Nightflow volumes at the start of 2018 were similar to the previous year, but by summer 2018 had not yet returned to summer 2017 levels.  It is therefore recommended that the reasons for this are further investigated.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide', fig.width=10}
+post_freeze1 <- vn.9 %>% select(everything()) %>% 
+  mutate(Months1 = substring(MonthYear,1,7)) %>% 
+  group_by(Months1) %>%
+  summarise(AvgTemperature = sum(AvgTemperature)/length(AvgTemperature),
+            averages = sum(ValueSum)/length(ValueSum))
+post_freeze1$Months1 <- paste(post_freeze1$Months1, "01", sep = "-")
+post_freeze1$Months1  <- ymd(post_freeze1$Months1)
+
+post_freeze2 <- vn.10 %>% select(everything()) %>% 
+  mutate(Months1 = substring(MonthYear,1,7)) %>%
+  group_by(Months1) %>%
+  summarise(AvgTemperature = sum(AvgTemperature)/length(AvgTemperature),
+            averages = sum(ValueSum)/length(ValueSum))
+post_freeze2$Months1 <- paste(post_freeze2$Months1, "01", sep = "-")
+post_freeze2$Months1  <- ymd(post_freeze2$Months1)
+
+post_freeze <- rbind(post_freeze1,post_freeze2)
+
+# Visualise January to June, for each of 2015, 2016, 2017, 2018
+H1_2015 <- post_freeze %>%  filter(between(Months1, ymd("2015-01-01"),ymd("2015-06-01"))) %>%  
+  filter(between(row_number(), 2, 2) | between(row_number(), 3, 8))%>% mutate(Category = "H1 2015")
+H1_2016 <- post_freeze %>%  filter(between(Months1, ymd("2016-01-01"),ymd("2016-06-01"))) %>%  
+  filter(between(row_number(), 1, 1) | between(row_number(), 3, 8))%>% mutate(Category = "H1 2016")
+H1_2017 <- post_freeze %>%  filter(between(Months1, ymd("2017-01-01"),ymd("2017-06-01"))) %>%  
+  filter(between(row_number(), 1, 1) | between(row_number(), 3, 8)) %>% mutate(Category = "H1 2017")
+H1_2018 <- post_freeze %>%  filter(between(Months1, ymd("2018-01-01"),ymd("2018-06-01"))) %>%  
+  filter(between(row_number(), 1, 1) | between(row_number(), 3, 8)) %>% mutate(Category = "H1 2018")
+
+scenarios2 <- rbind(H1_2015,H1_2016,H1_2017,H1_2018) 
+scenarios2$Category <- fct_relevel(scenarios2$Category,"H1 2015","H1 2016","H1 2017","H1 2018")
+scenarios2$AvgTemperature <- NULL
+
+ggplot(scenarios2) +
+  geom_line(aes(x = Months1, y = averages, col = Category), size = 1.3) + 
+  labs(title = "Monthly Nightflow Totals, January to June (2015-2018)", y = "Total Nightflow", x = "") + gg +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_date(labels = date_format("%b-%y"), breaks = "1 month") +
+  scale_y_continuous(name = "Total Nightflow", labels = function(x){paste0(x/10^6, 'M')}) + 
+  facet_wrap(~ Category, nrow = 1, ncol = 4, scales = "free_x") #+ coord_flip()
+
+```
+
+# **Recommendations**
+
+This report identifies the possible impact of freeze-thaw events on leakage, and provides a platform for further investigation into the effects of temperature on seasonal consumption.  Nevertheless, these remain high-level summaries, and therefore it is recommended that more detailed investigation is carried out in future phases.  This may take the form of a more detailed analysis of freeze-thaw events and localised effects on leakage, in addition to the use of temperature data in consumption estimates.

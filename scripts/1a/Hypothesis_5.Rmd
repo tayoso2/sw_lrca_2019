@@ -1,0 +1,129 @@
+---
+title: "Southern Water Leakage Root Cause Analysis - Hypothesis 5: Regional Discrepancies"
+output:
+    html_document:
+      theme: yeti
+      toc: true
+      toc_float: 
+        collapsed: false
+        smooth_scroll: true
+      number_sections: true
+---
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+#reading in libraries
+library(tidyverse)
+library(dplyr)
+library(leaflet)
+library(gridExtra)
+library(data.table)
+library(modelr)
+library(knitr)
+library(ggplot2)
+library(scales)
+library(mapview)
+library(sp)
+library(sf)
+library(tmap)
+library(lubridate)
+library(zoo)
+library(latex2exp)
+
+
+# If running script offline set to TRUE. If in EDA set to FALSE
+offline <- TRUE
+
+# Load in Files
+if(offline == TRUE){
+  args <- c("",
+            "New_Mains_DATE_LAID_1999_DMA.csv", 
+            "New Pipe DMA Summary_v2.csv", 
+            "New_Length_Nightflow_Change_Summary_v2.csv"
+            )
+}else{
+  args <- commandArgs(trailingOnly = TRUE)
+  setwd(args[1])
+}
+new.mains <- data.table(read.csv(args[2]))
+new.mains.summary <- data.table(read.csv(args[3]))
+new.length.nightflow.change.summary <- data.table(read.csv(args[4]))
+
+SEAMScolours <- c("#1F497D", "#C2332F", "#FFC000", "#00B050", "#F5750B", "#399BB6",
+                  "#999999", "#0072B2", "#D55E00", "#E69F00", "#009E73", "#56B4E9",
+                  "#CC79A7", "#F0E442")
+
+#setting ggplot 
+gg <- theme_bw() +
+  theme(legend.position = "bottom") 
+
+```
+
+**Version 1.1** 
+
+# **Executive Summary**
+
+There exist regional discrepancies in changes in leakage; it is hypothesised that some of this change is as a result, directly or indirectly, of new growth.  An experiment was undertaken which generated some evidence to suggest that there is indeed a link between the the installation of new pipes and an increase in leakage.
+
+# **Experiments**
+
+## **Hypothesis 5.1: Impact of Growth**
+
+The aim of this experiment is to assess the impact of the addition of new pipes to existing DMAs.
+
+
+# **Data**
+
+The following datasets are used in the investigation of this hypothesis:
+
+## **DMA Nightflow Data**
+
+This data was sourced from the Nightflow Mastersheet Workbook, detailing monthly Nightflow volumes from 2015 to 2018 inclusive.  This was validated, to remove zero and anomalous values, as explained in the Hypothesis 4 report.
+
+## **New Mains**
+
+### **New Mains Summary**
+
+This data summarises all pipes laid since 1999.  This was filtered to include only those pipes laid in the calendar years of 2016 and 2017; this is to allow a full year of leakage data (derived from Nightflow data) both before and after all pipe installation.
+
+In order to distinguish between pipes laid as a result of new growth, and replacement of existing pipes, spatial analysis was carried out.  Pipes at least five metres from the nearest abandoned main are assumed to be new growth, and are thus included in this analysis.  This is total of **`r round(sum(new.mains[Replace == 0][substr(DATE_LAID, nchar(as.character(DATE_LAID)) - 9, nchar(as.character(DATE_LAID)) - 6) %in% c(2016, 2017)]$PIPE_LENGT) / 1000)`km** of pipe.
+
+The data is summarised, with some columns removed for clarity, as follows.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+kable(head(new.mains[substr(DATE_LAID, nchar(as.character(DATE_LAID)) - 9, nchar(as.character(DATE_LAID)) - 6) %in% c(2016, 2017), .(ASSET_ID, DATE_LAID, PIPE_LENGT, DMA_Ref)]), digits = 2)
+
+```
+
+This data was then summarised, in order to analyse the quantity of new pipe in each DMA, as follows.  New pipe was laid in a total of 270 DMAs in 2016 and/or 2017.
+
+In DMAs where, of all new pipes laid in a DMA in 2016 and 2017, all new pipes were laid in a single month, the average monthly nightflow of the 12 months immediately before this was compared to the average monthly nightflow of the 12 months afterwards.
+
+In DMAs where work was carried out over more than one month in 2016 and 2017, the work was deemed to have nominally started in the month when at least the first 10% of work (in terms of length) was completed.  The work was deemed to have nominally finished in the month by which at least 90% of the work had been completed.  The average monthly nightflow of the 12 months before the nominal start month was then compared to the average monthly nightflow of the 12 months after the nominal end date.
+
+Only those DMAs with 12 months of nightflow data both before and after the work being completed, of which there are **`r nrow(new.mains.summary)`**, were included in the analysis.
+
+An example of this data is as follows.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+kable(head(new.mains.summary), digits = 2)
+
+```
+
+# **Results**
+
+DMAs in which new pipe was laid were divided in deciles, from the least amount of new pipe installation to the most.  The average percentage change in nightflow (from the 12-month average before work started to the 12-month average after work finished) was then calculated for each of these deciles.  The results of this analysis are displayed below.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+new.length.nightflow.change.summary$Change <- ((new.length.nightflow.change.summary$After / new.length.nightflow.change.summary$Before) - 1) * 100
+
+ggplot(new.length.nightflow.change.summary, aes(Decile, Change)) + geom_bar(stat = "identity", fill = "grey", color = "black") + gg + scale_x_continuous(name = "DMAs by Deciles of Pipe Installation Quantity (Low to High)", breaks = c(1:10)) + scale_y_continuous(name = "Average Percentage Nightflow Change (Before vs After Pipe Installation)") + labs(title = "Quantity of New Growth Pipe Installation compared to Leakage Change")
+
+```
+
+# **Recommendations**
+
+There is some evidence in the results above to suggest that leakage generally appears to increase in DMAs with a significant quantity of new growth.  This may simply be due to the fact that an increase in pipe length leads to a corresponding increase in leakage.  Alternatively, unaccounted consumption may be misattributed to leakage.  One possibility would be to compare to set these results in the context of increases in property counts.  Therefore, further investigations into this matter are recommended.

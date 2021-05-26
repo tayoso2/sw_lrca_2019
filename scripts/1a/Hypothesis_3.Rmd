@@ -1,0 +1,282 @@
+---
+title: "Southern Water Leakage Root Cause Analysis - Hypothesis 3: Asset Base Inherent Impacts"
+output:
+    html_document:
+      theme: yeti
+      toc: true
+      toc_float: 
+        collapsed: false
+        smooth_scroll: true
+      number_sections: true
+---
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+#reading in librarys
+library(tidyverse)
+library(knitr)
+library(sf)
+library(tmap)
+
+
+
+#reading in vlookup data
+data <- read_csv("Nightflow Mastersheet_sheet_6.csv")
+category.sheet <- read_csv("DMA category analysis v4.csv")
+
+
+
+
+SEAMScolours <- c("#1F497D", "#C2332F", "#FFC000", "#00B050", "#F5750B", "#399BB6",
+                  "#999999", "#0072B2", "#D55E00", "#E69F00", "#009E73", "#56B4E9",
+                  "#CC79A7", "#F0E442")
+
+#setting ggplot 
+gg <- theme_bw() +
+  theme(legend.position = "bottom") 
+
+```
+
+**Version 1.1** 
+
+# **Executive Summary**
+
+The aim of this hypothesis is to investigate the inherent impacts of the asset base makeup on leakage.  An experiment has been carried out to investigate leakage by material type; in order to do this, DMAs were statistically clustered into groups of similar material makeup.   DMAs containing a higher than average proportion of iron pipe were observed, in general, to have a higher leakage than others.
+
+# **Experiments**
+
+## **Experiment 3.1: Leakage by Material Type**
+
+It is generally accepted that the makeup of the asset base, particularly in terms of age and material, affects leakage.  However, it is also hypothesised that leakage on PE pipes are not being detected to the same extent as on other materials, and that a 'patchwork quilt' makeup of a DMA, in which repeated partial pipe replacement has led to a mix of materials, has an adverse effect on leakage.  This experiment will aim to analyse the correlation between asset base makeup and leakage, and in conjunction with other experiments will aim to identify the possibility that leakage may be under-reported on DMAs with a prevalence of certain material types.
+
+# **Data**
+
+The following datasets are used in the investigation of this hypothesis:
+
+## **DMA Nightflow Data**
+
+This data was sourced from the Nightflow Mastersheet Workbook.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+
+#Pulling potentially useful factors
+data1 <- data %>%
+  select(
+    County,
+    Management.area = `Management Area`,
+    DMA,
+    Phase,
+    Property.count = `Property Count`,
+    Length = `Mains Length NEW`,
+    Asbestos:Unknown,
+    Length.after.2000 = `New Mains Installed after 2000 (m)`,
+    Leakage.m3.hr = `Reported Leakage (m3/hr)`,
+    march.april.leakage.18 =`March/April_18`,
+    march.april.leakage.19 = `March/April_19`,
+    DMA.desc = `DMA Description`
+  )
+```
+
+This data summarises **`r length(unique(data1$DMA))`** unique DMAs.  This is not an exhaustive record of DMAs; as such, this experiment is unique in using this data, rather than the main Nightflow totals, as a source of data.  The variables of interest, in this report, include a series of material proportions indicating the material constituency of the DMA, the length of pipe in each DMA, and the recorded leakage (in $m^3/hr$).  The table below shows shows an example of this data.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+kable(head(select(data1,DMA,Length,Asbestos:Unknown,Leakage.m3.hr)),caption = "Data example",digits = 2)
+
+```
+
+### **DMA Spatial Overview**
+
+The map below provides a graphical visualisation of leakage by area.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE,results = "hide"}
+
+shape <- st_read("DistrictmeterAreas.TAB")
+
+```
+
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE,cache = TRUE}
+
+shape1 <- shape %>%
+  left_join(data1,by = c("DMA_Ref" = "DMA")) %>%
+  filter(!is.na(Leakage.m3.hr)) %>%
+  mutate(Leakage = Leakage.m3.hr/Length) %>%
+  arrange(Leakage) %>%
+  mutate(row = row_number(),
+         `Ordered leakage percentile` = 10*(as.numeric(row) %/% (924/10))+1) 
+  
+
+
+
+tmap_mode("view")
+tm_shape(shape1) +
+  tm_polygons("Ordered leakage percentile")
+
+
+```
+
+
+
+
+
+### **DMA Clustering**
+
+In order to visualise leakage in comparison to the material consituency of DMAs, 'clustering' is applied to group DMAs with similar material constituencies.  The leakage of these groups is then compared to understand how leakage changes with material constituencies
+
+Clustering is a machine learning technique which compares the distance between multidimensional datapoints to find groups with similar attributes.  The method is demonstrated as an example here to be expanded in the future.  The number of groups chosen is four as an example, work should be done in the future to explore more optimum groupings.
+
+The average material constituency of the four groups, after applying the clustering technique, is shown in the histograms below.
+
+* Group 1 contains DMAs with a significant quantity of PVC.
+* Group 2 contains DMAs of which the vast majority of material is Iron.
+* Group 3 contains DMAs with a significant quantity of PE.
+* Group 4 contains DMAs with no particular predominant material.
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+
+
+set.seed(27)
+clusters <- kmeans(as.matrix(na.omit(data1[,7:13])),4)
+
+
+group.index.naming <- data.frame(group.index = c(1,2,3,4),group.name = c("Largely Iron","Largely PE","Mixed","Largely PVC"))
+
+
+clusters[["centers"]] %>%
+  as.data.frame() %>%
+  mutate(group.index = row_number()) %>%
+  gather("Material","Value",-group.index)%>%
+  left_join(group.index.naming) %>%
+  ggplot(aes(x = Material,y = Value,fill = Material))+
+  geom_bar(stat = "identity",color = "black") +
+  facet_wrap(~group.name) +
+  scale_fill_manual(values = SEAMScolours) + gg +
+  guides(fill = FALSE) +
+  labs(y = "Proportion",title = "Clustered group composition")
+
+
+
+```
+
+### **Highest ten DMAs**
+
+The table below summarises the ten DMAs with the highest leakage, per metre of pipe.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+temp <- data1 %>%
+  mutate(Leakage.per.m = Leakage.m3.hr/Length) %>%
+  arrange(desc(Leakage.per.m)) %>%
+  select(`DMA Description` =DMA.desc,`Leakage per metre` = Leakage.per.m)
+  
+kable(temp[1:10,],caption = "Highest ten DMAs by leakage per metre")
+  
+```
+
+
+<!-- ## **Property count** -->
+### **Distribution of Leakage across Length**
+
+The graph below shows the distribution of leakage across DMAs. The graph indicates that 40% of leakage is attributed to 10% of DMAs.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+
+lab = paste0(10*(1:10),"%")
+
+data2 <- data1 %>%
+  filter(!is.na(Leakage.m3.hr),!is.na(Length)) %>%
+  mutate(Leakage = Leakage.m3.hr/Length) 
+
+data2 %>%  
+  arrange(Leakage) %>%
+  mutate(row = row_number(),
+         group = (as.numeric(row) %/% (924/10))+1) %>%
+  group_by(group) %>%
+  summarise(Leakage = 100*(sum(Leakage)/(sum(data2$Leakage)))) %>%
+  ggplot(aes(x = factor(group),y = Leakage)) +
+  geom_bar(stat = "identity", fill = SEAMScolours[1]) +
+  scale_x_discrete(labels = lab) +
+  gg +
+  labs(x = "Percentile of DMAs ordered by leakage",y = "Proportion of total leakage (%)")
+
+
+```
+
+# **Results**
+
+## **Leakage by DMA Material Composition**
+
+The leakage in the identified groups can now be compared to understand the impact of material composition on leakage.  Below is a box plot describing the distribution of leakage for each of the identified groups, transformed for clear viewing.  The colour indicates the predominant asset consituency of the underlying group, with the exception of the mixed group.  Outliers are removed for clarity.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+# b <- data1 %>%
+#   filter(!is.na(Asbestos)) %>%
+#   mutate(group.index = clusters$cluster) %>%
+#   left_join(group.index.naming)
+
+  # ggplot(b,aes(x = Leakage.m3.hr,color = factor(group.index))) +
+  # geom_density() + gg
+options(scipen=10000)
+
+data1 %>%
+  filter(!is.na(Asbestos)) %>%
+  mutate(group.index = clusters$cluster,
+         leakage.rate = Leakage.m3.hr/Length) %>%
+  left_join(group.index.naming) %>%
+  ggplot(aes(x = group.name,y = leakage.rate,fill = factor(group.name)))+
+  geom_boxplot() +
+  ylim(0, 1) + 
+  scale_fill_manual(values = SEAMScolours[c(2,4,5,7)]) + 
+ # coord_trans(y = "log2") + 
+  coord_flip() +
+  gg +
+  guides(fill = FALSE)+
+  labs(y = "Leakage Rate (m^3/hr/km)",x = "Group Index",title= "Leakage Distribution")
+
+# significance <- data1 %>%
+#   filter(!is.na(Asbestos)) %>%
+#   select(Leakage.m3.hr,Length) %>%
+#   mutate(group.index = clusters$cluster) %>%
+#   filter(Leakage.m3.hr > 0)
+
+
+data1 %>%
+  filter(!is.na(Asbestos)) %>%
+  mutate(group.index = clusters$cluster,
+         leakage.rate = Leakage.m3.hr/Length) %>%
+  left_join(group.index.naming) %>%
+  group_by(group.name) %>%
+  summarise(min = min(leakage.rate),
+            max = max(leakage.rate),
+            mean = mean(leakage.rate),
+            median = median(leakage.rate)) %>%
+  setNames(c("Material Profile","Minimum Leakage Rate (m^3/hr/km)","Maximum Leakage Rate (m^3/hr/km)","Mean Leakage Rate (m^3/hr/km)","Median Leakage Rate (m^3/hr/km)")) %>%
+  kable(digits = 2,caption = "Leakage by material profile summary statistics")
+  
+
+group.join <- data1 %>%
+  filter(!is.na(Asbestos)) %>%
+  select(DMA) %>%
+  mutate(group.index = clusters$cluster) %>%
+  unique() %>%
+  left_join(group.index.naming) %>%
+  select(DMA,Material_profile = group.name) 
+
+
+category.sheet %>%
+  left_join(group.join,by = c("DMA.Code" = "DMA")) %>%
+  write_csv("DMA category analysis v5.csv")
+  
+
+
+```
+
+This investigation therefore suggests some evidence that there does exist a 'patchwork quilt' effect; the mean leakage in areas of no particular predominant material is higher than in DMAs of predominantly any single material, including iron.
+
+# **Recommendations**
+
+As these results are based only on a high-level summary of material proportions per DMA, it is recommended that further investigation is undertaken into the exact makeup of DMAs, for example, by using GIS data to derive the proportion of pipe joints between different material types.  It is suggested that this is carried out in a future phase of work.

@@ -1,0 +1,657 @@
+---
+title: "Southern Water Leakage Root Cause Analysis - Hypothesis 7: Property Data"
+output:
+    html_document:
+      theme: yeti
+      toc: true
+      toc_float: 
+        collapsed: false
+        smooth_scroll: true
+      number_sections: true
+---
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+#reading in librarys
+library(tidyverse)
+library(dplyr)
+library(leaflet)
+library(gridExtra)
+library(data.table)
+library(modelr)
+library(knitr)
+library(ggplot2)
+library(scales)
+library(mapview)
+library(sp)
+library(sf)
+library(tmap)
+library(lubridate)
+library(zoo)
+library(latex2exp)
+library(kableExtra)
+
+
+# If running script offline set to TRUE. If in EDA set to FALSE
+offline <- TRUE
+
+# Load in Files
+if(offline == TRUE){
+  args <- c("",
+            "testleakage7.1.csv",
+            "Household Reads by Region.csv",
+            "NHH_meter_reads_2018-19.csv", 
+            "Consumption2017-18.csv",
+            "metered and unmetered buildings TO.csv",
+            "extrapolation TO.csv",
+            "extrapolation 2 TO.csv",
+            "scatter v2.csv",
+            "gis.shp", 
+            "PropertyCounts.csv"
+            )
+}else{
+  args <- commandArgs(trailingOnly = TRUE)
+  setwd(args[1])
+}
+leak71 <- read.csv(args[2], header = FALSE)
+hh <- fread(args[3])
+nhh <- fread(args[4])
+consumption <- read.csv(args[5], header = FALSE)
+combination2 <- fread(args[6], header=TRUE, stringsAsFactors=FALSE)
+xplate2 <- fread(args[7], header=TRUE, stringsAsFactors=FALSE)
+xplate4 <- fread(args[8], header=TRUE, stringsAsFactors=FALSE)
+scatter <- fread(args[9], header=TRUE, stringsAsFactors=FALSE)
+gis <- st_read(args[10])
+property.counts <- fread(args[11], header=TRUE, stringsAsFactors=FALSE)
+
+SEAMScolours <- c("#1F497D", "#C2332F", "#FFC000", "#00B050", "#F5750B", "#399BB6",
+                  "#999999", "#0072B2", "#D55E00", "#E69F00", "#009E73", "#56B4E9",
+                  "#CC79A7", "#F0E442")
+
+#setting ggplot 
+gg <- theme_bw() +
+  theme(legend.position = "bottom") 
+
+```
+
+**Version 2.0** 
+
+# **Executive Summary**
+
+Estimations relating to property counts, and consumption by unmetered customers, are used in the calculation of Leakage.  The aim of this hypothesis is to identify potential inaccuracies in these estimations, which may affect the calculation of Leakage.
+
+An average daily consumption for metered household and non-household customers has been derived.  Consumption was then extrapolated to include non-metered customers, deriving a basic estimate of consumption for each DMA.  This was then compared with Nightflow totals; it is expected that these would generally correlate, with higher Nightflow being recorded in DMAs with higher consumption.  However, some DMAs were identified in which the Nightflow was significantly higher than would be expected based on estimated consumption, and these have therefore been highlighted for recommended further investigation; some of these appear to be related to discrepancies in different sources of property data.
+
+In addition, Household Meter Readings have been analysed in order to determine if consumption patterns are different for customers using AMR meters, in comparison to other meter types.  It was observed that AMR Meters generally record slightly higher consumption than other meter types, with older AMR meters recording less consumption than those less than five years old. 
+
+# **Experiments**
+
+## **Hypothesis 7.1: NHH Estimates**
+
+Currently, 46% of Non-Household (NHH) Customers are unmetered, and their water consumption is therefore estimated.  This estimated affects the Leakage calculation.  The purpose of this investigation is to use available data to derive a nominal consumption, and compare this to estimated Leakage data, in the context of property data discrepancies.
+
+## **Hypothesis 7:2: ABP, Addresspoint and R&P Property Counts**
+
+The discrepancy between R&P properties and actual properties (derived from ABP and previously Addresspoint datasets) could have an impact in the leakage calculation; more specifically the night-use allowance.
+
+R&P property counts are all the properties in the Southern Water billing system which is not geocoded. Addresspoint is a geocoded data set which has now been superseded by the Address Base Premium (ABP) dataset.
+
+![OFWAT Leakage Calculation](LeakageFlow.jpg)
+
+## **Hypothesis 7.4: AMR Meter Reporting**
+
+Approximately 10% of AMR Meters do not report readings.  It is hypothesised that these may behave differently from other types of meter, and the estimated consumption of this 10% is leading to errors in the calculation of Leakage.
+
+
+# **Data**
+
+The following datasets are used in the investigation of this hypothesis:
+
+## **Consumption Data**
+
+This data was supplied by Southern Water, and covers the period from 1 April 2016 to 31 March 2019.  The data is based on meter readings, with consumption derived based on the differences between readings.
+
+At the start and ends of this three year period, the sample size becomes smaller, and therefore, investigations were focussed on the middle year of this data, 1 April 2017 to 31 March 2018, for which an average consumption per property, per day, has been derived.  This is done based on a simple average of water used per day, spread evenly between meter readings.  It does not account for seasonal variations in consumption at individiual property level, although given the large size of the dataset, and the fact that household meter readings are taken almost daily, this method is expected to give a general picture of seasonal consumption.
+
+This data is divided into household and non-household customers.  This data is then extrapolated to include unmetered customers, by taking the average customer consumption, per day, in each DMA, and applying this to each unmetered customer.
+
+The results of this are displayed below.  It should be noted that the scale of each graph is adjusted for clarity.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide', fig.height=10, fig.width=10}
+
+combination2$day <- ymd(combination2$day)
+xplate2$day <- ymd(xplate2$day)
+xplate4$day<- ymd(xplate4$day)
+
+household_metered <- xplate2 %>%  select(day, DMA_Ref,avgdailyuse) %>% group_by(day) %>% 
+  summarise(avgdailyuse = sum(avgdailyuse)) 
+
+# Household Unmetered
+household_unmetered <- xplate2 %>%  select(day, DMA_Ref,UnmeteredUsage) %>% group_by(day) %>% 
+  mutate(UnmeteredUsage = replace_na(UnmeteredUsage,0)) %>%
+  summarise(UnmeteredUsage = sum(UnmeteredUsage))
+
+# Non Household Metered
+
+nonhousehold_metered <- xplate4 %>%  select(day, DMA_Ref,avgdailyuse) %>% group_by(day) %>% 
+  summarise(avgdailyuse = sum(avgdailyuse)) 
+
+# Non Household Unmetered
+nonhousehold_unmetered <- xplate4 %>%  select(day, DMA_Ref,UnmeteredUsage) %>% group_by(day) %>% 
+  mutate(UnmeteredUsage = replace_na(UnmeteredUsage,0)) %>%
+  summarise(UnmeteredUsage = sum(UnmeteredUsage))
+
+#grid.arrange(household_metered,household_unmetered,nonhousehold_metered,nonhousehold_unmetered, nrow = 2)
+household_metered$Category <- "Household Metered"
+household_unmetered$Category <- "Household Unmetered"
+household_unmetered <-  household_unmetered %>%  rename(avgdailyuse = UnmeteredUsage)
+nonhousehold_metered$Category <- "NHH Metered"
+nonhousehold_unmetered$Category <- "NHH Unmetered"
+nonhousehold_unmetered <-  nonhousehold_unmetered %>%  rename(avgdailyuse = UnmeteredUsage)
+# Household Metered
+hm <- ggplot(household_metered) +
+  geom_line(aes(x = day, y = avgdailyuse),col = "coral",size=1.3) + 
+  labs(title = "Total Consumption per day - Household Metered", y = "Average Daily Use /m3")+ gg +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_date(labels = date_format("%b-%y"), breaks = "2 months") 
+
+# Household Unmetered
+hu <-  ggplot(household_unmetered) +
+  geom_line(aes(x = day, y = avgdailyuse),col = "aquamarine2",size=1.3) + 
+  labs(title = "Total Consumption per day - Household Unmetered", y = "Average Daily Use /m3")+ gg +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_date(labels = date_format("%b-%y"), breaks = "2 months") 
+
+
+# Non Household Metered
+nm <- ggplot(nonhousehold_metered) +
+  geom_line(aes(x = day, y = avgdailyuse),col = "coral",size=1.3) + 
+  labs(title = "Total Consumption per day - NHH Metered", y = "Average Daily Use /m3")+ gg +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_date(labels = date_format("%b-%y"), breaks = "2 months") 
+
+# Non Household Unmetered
+nu <- ggplot(nonhousehold_unmetered) +
+  geom_line(aes(x = day, y = avgdailyuse),col = "aquamarine2",size=1.3) + 
+  labs(title = "Total Consumption per day - NHH Unmetered", y = "Average Daily Use /m3")+    gg +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_date(labels = date_format("%b-%y"), breaks = "2 months") 
+
+grid.arrange(hm,hu,nm,nu, nrow = 2)
+
+
+```
+
+This data can be summarised more generally as follows.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide', fig.width=10}
+combination2 %>%   
+  ggplot(aes(day, avgdailyuse), position = "dodge") + 
+  geom_bar(aes(fill = Category), stat = "identity") + 
+  #scale_x_continuous(name = "Day", breaks = c(1:10)) + 
+  scale_y_continuous(name = "Total Consumption by Category /m3", labels = function(x){paste0(x/1000000, 'M')}) + 
+  scale_fill_manual(values=c("red3","orange2","gold1","forestgreen")) + gg +
+  labs(title = "Total Consumption per Month") +
+  scale_x_date(name = "Month", labels = date_format("%b-%y"), breaks = "1 months")
+
+```
+
+It should be noted that this is a simple estimation of seasonal consumption, for the purposes of comparing this with nightflow data, and is not intended to replicate or replace the leakage calculation.
+
+
+
+
+## **Household Meter Readings (2018-19)**
+
+This data is used to evaluate consumption by customers in comparison to customers with other types of meter. Consumption is compared accross different regions, as well as by the age of AMR meters, with meters over five years old classed as 'Old' and those more recently installed classed as 'New'. This analysis includes only those where there exist multiple meter readings covering a time period of over 14 consecutive days.
+
+The distribution of meter types is as follows:
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+hh$`Reading Date` <- ymd(hh$`Reading Date`)
+hh$`Installation Date` <- ymd(hh$`Installation Date`)
+dateNA <- is.na(hh$`Reading Date`)
+readingNA <- is.na(hh$Reading)
+hh <- hh[!dateNA & !readingNA]
+
+zeros <- hh$Reading == 0
+hh <- hh[!zeros,]
+
+SWmeters <- c("25mm - 4 Dials", "AMR conc mtr 15mm - 5 dials", "AMR conc mtr 20mm - 5 dials",
+              "AMR inline mtr 100mm - 6 dials", "AMR inline mtr 150mm - 6 dials",
+              "AMR inline mtr 15mm - 5 dials", "AMR inline mtr 20mm - 5 dials",
+              "AMR inline mtr 25mm - 5 dials", "AMR inline mtr 40mm - 6 dials",
+              "AMR inline mtr 50mm - 6 dials", "AMR inline mtr 80mm - 6 dials", "ARAD Mter 50mm 7 Dial",
+              "Elster COMB Meter 100mm", "Elster COMB Meter 15mm", "Elster COMB Meter 20mm",
+              "Elster COMB Meter 40mm", "Elster COMB Meter 50mm", "Elster COMB Meter 50mm 6 Dial",
+              "Elster COMB Meter 80mm", "Elster Meter 100mm 6 Dial", "Elster Meter 150mm 6 Dial",
+              "Elster Meter 15mm - 4 Dials", "Elster Meter 15mm - 5 Dials", "Elster Meter 15mm - 6 Dials",
+              "Elster Meter 20mm - 4 Dials", "Elster Meter 20mm - 5 Dials", "Elster Meter 25mm - 4 Dials",
+              "Elster Meter 25mm - 5 Dials", "Elster Meter 25mm - 6 Dials", "Elster Meter 40mm - 4 Dials",
+              "Elster Meter 40mm - 5 Dials", "Elster Meter 40mm - 6 Dials", "Elster Meter 40mm - 7 Dials",
+              "Elster Meter 50mm", "Elster Meter 50mm 5 Dial", "Elster Meter 50mm 6 Dial",
+              "Elster Meter 50mm 7 Dial", "Elster Meter 80mm 6 Dials")
+
+hh <- filter(hh, `Device Category` %in% SWmeters)
+
+duped <- duplicated(hh$`Serial Number`)
+dupednames <- hh$`Serial Number`[duped]
+
+matches <- filter(hh, `Serial Number` %in% dupednames)
+
+AMRdetect <- str_detect(matches$`Device Category`, "AMR*")
+AMR <- matches[AMRdetect,]
+other <- matches[!AMRdetect,]
+
+df7.4 <- data.frame("New AMR Meters" = 
+                      length(unique(AMR[AMR$`Installation Date`>dmy("01/07/2014"),]$`Serial Number`)),
+                    "Old AMR Meters" = 
+                      length(unique(AMR[AMR$`Installation Date`<dmy("01/07/2014"),]$`Serial Number`)),
+                    "Other Meter Types" = length(unique(hh$`Serial Number`)) - 
+                            length(unique(AMR$`Serial Number`)))
+names(df7.4) <- c("New AMR Meters", "Old AMR Meters", "Other Meter Types")
+
+column_spec(kable(df7.4,caption = "Counts of Meter Types", digits = 2), ncol(df7.4), width = "4cm") 
+
+```
+
+
+
+## **Property Data**
+
+There is a 9% discrepancy between the R&P property count and ABP count.  This has jumped from the 1% discrepancy from Addresspoint dataset.  In order to reconcile the property counts, a DMA factor is applied to scale down the property count on a WBA level.  There is a 8% difference between ABP and Addresspoint Factor applied.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+column_spec(row_spec(kable(property.counts, caption = "Property Counts", digits = 2, align = c('l', 'r', 'r', 'r', 'r', 'r')), nrow(property.counts), bold = TRUE), ncol(property.counts), width = "3cm")
+
+```
+
+
+
+
+
+
+
+# **Results**
+
+## **Hypotheses 7.1 and 7.2:  Estimated Consumption compared to Nightflow and Property Data**
+
+The estimated consumption, as derived in Section 3 above, was then plotted against the total Nightflow for the same DMA in the same period (2017-18).  It would generally be expected that this comparison would show a high degree of correlation.
+
+DMAs are coloured on this plot based on the discrepancy between R&P and ABP Property Data.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide', fig.width=10}
+ggplot(na.omit(scatter), aes(totalconsumption, totalnightflow)) + 
+  geom_jitter(aes(colour = property_discrepancy)) + 
+  scale_color_gradient2(low = "darkgreen", mid = "gold", high = "red3", midpoint = 1366) +
+  geom_smooth(aes(),col = "red", method = "lm") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + 
+  scale_x_continuous(name = "Estimated DMA Consumption", limits = c(0,500000), labels = function(x){paste0(x/1000, 'K')}) + 
+  scale_y_continuous(name = "Total Nightflow", limits = c(0,750000), labels = function(x){paste0(x/1000, 'K')}) + 
+  #scale_color_manual(values=c("red3","orange2","gold1","forestgreen","blue3","gray90","grey")) + 
+  labs(title = "Estimated DMA Consumption vs. Total Nightflow (April 2017 - March 2018)") + gg
+```
+
+It can be seen from the above data that there are several significant outliers, in which the recorded nightflow is significantly higher than what would be expected, given the consumption estimates.
+
+Therefore, the top 20 DMAs, ordered by total Nightflow, are shown below.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+gis <- gis[!duplicated(gis$DMA_Dsc),]
+st_crs(gis) <- 27700
+scatter2 <- na.omit(scatter) %>%  inner_join(gis[,c("DMA_Ref","geometry")], by = "DMA_Ref") %>% 
+  arrange(desc(totalnightflow)) %>% filter(between(row_number(), 1, 20))
+scatter2 <- st_as_sf(scatter2)
+st_crs(scatter2) <- 27700
+
+scatter3 <-  scatter2
+scatter3 <- st_set_geometry(scatter3, NULL)
+scatter3$top_20 <- NULL
+colnames(scatter3) <- c("DMA", "Total Consumption (2017-18)", "Total Nightflow (2017-18)", "Property Discrepancy")
+column_spec(kable(scatter3, caption = "Property Counts", digits = 2), ncol(scatter3), width = "5cm") 
+
+scatter4 <- na.omit(scatter) %>%  inner_join(gis[,c("DMA_Ref","geometry")], by = "DMA_Ref")
+colnames(scatter4) <- c("DMA", "Total Consumption (2017-18)", "Total Nightflow (2017-18)", "Property Discrepancy", "Top20", "geometry")
+scatter4 <- st_as_sf(scatter4)
+st_crs(scatter4) <- 27700
+
+scatter5 <- scatter4[scatter4$Top20 == 1, ]
+```
+
+Property Discrepancies (as per the scatter plot above) are identified on the map below.  The top 20 DMAs, in terms of nightflow (as per the above table), are highlighted with a blue border.  A number of these are known to be in an area of significant property development in North Kent.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, fig.width=10}
+
+tmap_mode("view")
+tm_shape(scatter4) + tm_polygons(alpha = 0.75, col = "Property Discrepancy", palette = c("darkgreen", "gold", "red3"), style = "cont",  n = 8, legend.reverse = FALSE, auto.palette.mapping = FALSE, lwd = 1) + tm_basemap("Esri.WorldStreetMap") + 
+tm_shape(scatter5) + tm_polygons(alpha = 0, lwd = 3, border.col = "darkblue") + tm_basemap("Esri.WorldStreetMap")
+
+```
+
+## **Hypothesis 7.4:  Consumption by Meter Type**
+
+Household Meter Readings data was divided into spatial areas (West, Central and East), with their consumption plotted over time.
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide', fig.width=9, fig.height = 8, cache = TRUE}
+
+e17 <- fread("2016-17.csv")
+e18 <- fread("2017-18.csv")
+
+e17$`Reading Date` <- dmy(substring(e17$`Reading Date`, 1, (nchar(e17$`Reading Date`) -9)))
+e18$`Reading Date` <- dmy(substring(e18$`Reading Date`, 1, (nchar(e18$`Reading Date`) -9)))
+
+hh <- fread("Household Reads by Region.csv")
+# hh$`Reading Date` <- substring(hh$`Reading Date`, 1, (nchar(hh$`Reading Date`) -9))
+hh$`Reading Date` <- ymd(hh$`Reading Date`)
+hh$`Installation Date` <- ymd(hh$`Installation Date`)
+dateNA <- is.na(hh$`Reading Date`)
+readingNA <- is.na(hh$Reading)
+hh <- hh[!dateNA & !readingNA]
+
+zeros <- hh$Reading == 0
+hh <- hh[!zeros,]
+
+# filter for only SW meters
+SWmeters <- c("25mm - 4 Dials", "AMR conc mtr 15mm - 5 dials", "AMR conc mtr 20mm - 5 dials",
+              "AMR inline mtr 100mm - 6 dials", "AMR inline mtr 150mm - 6 dials",
+              "AMR inline mtr 15mm - 5 dials", "AMR inline mtr 20mm - 5 dials",
+              "AMR inline mtr 25mm - 5 dials", "AMR inline mtr 40mm - 6 dials",
+              "AMR inline mtr 50mm - 6 dials", "AMR inline mtr 80mm - 6 dials", "ARAD Mter 50mm 7 Dial",
+              "Elster COMB Meter 100mm", "Elster COMB Meter 15mm", "Elster COMB Meter 20mm",
+              "Elster COMB Meter 40mm", "Elster COMB Meter 50mm", "Elster COMB Meter 50mm 6 Dial",
+              "Elster COMB Meter 80mm", "Elster Meter 100mm 6 Dial", "Elster Meter 150mm 6 Dial",
+              "Elster Meter 15mm - 4 Dials", "Elster Meter 15mm - 5 Dials", "Elster Meter 15mm - 6 Dials",
+              "Elster Meter 20mm - 4 Dials", "Elster Meter 20mm - 5 Dials", "Elster Meter 25mm - 4 Dials",
+              "Elster Meter 25mm - 5 Dials", "Elster Meter 25mm - 6 Dials", "Elster Meter 40mm - 4 Dials",
+              "Elster Meter 40mm - 5 Dials", "Elster Meter 40mm - 6 Dials", "Elster Meter 40mm - 7 Dials",
+              "Elster Meter 50mm", "Elster Meter 50mm 5 Dial", "Elster Meter 50mm 6 Dial",
+              "Elster Meter 50mm 7 Dial", "Elster Meter 80mm 6 Dials")
+
+hh <- filter(hh, `Device Category` %in% SWmeters)
+
+# attach region, installation date and device category then join to hh
+hhjoin <- unique(hh %>% select(`Serial Number`, `Installation Date`, Region,
+                               `Device Category`))
+hhjoin <- hhjoin[hhjoin$Region != "",]
+
+a17 <- e17 %>% select(`Serial Number`, `Reading Date`, Reading) %>%
+        left_join(hhjoin, by = "Serial Number") %>%
+        drop_na()
+a18 <- e18 %>% select(`Serial Number`, `Reading Date`, Reading) %>%
+        left_join(hhjoin, by = "Serial Number") %>%
+        drop_na()
+
+cuthh <- hh %>% select(`Serial Number`, `Reading Date`, Reading,
+                       `Installation Date`, Region, `Device Category`)
+
+hh <- rbind(a17, a18, cuthh)
+hh <- hh[hh$Region != "",]
+
+duped <- duplicated(hh$`Serial Number`)
+dupednames <- hh$`Serial Number`[duped]
+
+AMRdetect <- str_detect(hh$`Device Category`, "AMR*")
+AMR <- hh[AMRdetect,]
+other <- hh[!AMRdetect,]
+
+AMRf <- AMR %>% select(`Serial Number`, `Reading Date`, Reading, Region, `Installation Date`) %>%
+        group_by(`Serial Number`) %>%
+        distinct(`Reading Date`, .keep_all = TRUE) %>% # removing multiple readings on same day
+        arrange(`Reading Date`) %>% # ensure all entries are in right order
+        mutate(Used = lead(Reading) - (Reading)) %>%
+        mutate(Period = as.numeric(lead(`Reading Date`) - `Reading Date`)) %>%
+        mutate(Rate = Used / Period) %>%
+        mutate(Lead_date = lead(`Reading Date`)) %>%
+        filter(Period > 14) %>% # removing very short time periods - also removes NA 
+        filter(Used < 20000) # removing unusually large value - also removes NA (only keeps TRUE)
+
+"%ni%" <- Negate("%in%")
+
+# removing all of the entries for each meter that contains at least 1 negative 'Used'
+negused <- AMRf %>% filter(Used < 0) %>%
+        select(`Serial Number`) %>% unlist()
+nonegs <- AMRf %>% filter(`Serial Number` %ni% negused)
+
+
+x <- seq.Date(ymd("2016-09-01"), by = 1, length.out = 730)
+newresult <- data.frame(day = x)
+oldresult <- data.frame(day = x)
+
+
+NewEastdailyuse <- c()
+NewWestdailyuse <- c()
+NewCentraldailyuse <- c()
+OldEastdailyuse <- c()
+OldWestdailyuse <- c()
+OldCentraldailyuse <- c()
+
+
+nonegsdf <- as.data.frame(nonegs)
+
+
+eastAMR <- filter(nonegsdf, Region == "East")
+westAMR <- filter(nonegsdf, Region == "West")
+centralAMR <- filter(nonegsdf, Region == "Central")
+
+NewEastAMR <- filter(eastAMR, `Installation Date` > dmy("01/07/2014"))
+NewWestAMR <- filter(westAMR, `Installation Date` > dmy("01/07/2014"))
+NewCentralAMR <- filter(centralAMR, `Installation Date` > dmy("01/07/2014"))
+OldEastAMR <- filter(eastAMR, `Installation Date` < dmy("01/07/2014"))
+OldWestAMR <- filter(westAMR, `Installation Date` < dmy("01/07/2014"))
+OldCentralAMR <- filter(centralAMR, `Installation Date` < dmy("01/07/2014"))
+
+
+for(i in seq_along(newresult[["day"]])) {
+        NewEastdailyuse[i] <- (sum(NewEastAMR[NewEastAMR$`Reading Date` < newresult[["day"]][i] & 
+                                                      NewEastAMR$Lead_date >= newresult[["day"]][i],][,"Rate"])
+                               / length(NewEastAMR[NewEastAMR$`Reading Date` < newresult[["day"]][i] & 
+                                                           NewEastAMR$Lead_date >= newresult[["day"]][i],][,"Rate"]))
+}
+
+for(i in seq_along(newresult[["day"]])) {
+        NewWestdailyuse[i] <- (sum(NewWestAMR[NewWestAMR$`Reading Date` < newresult[["day"]][i] & 
+                                                      NewWestAMR$Lead_date >= newresult[["day"]][i],][,"Rate"])
+                               / length(NewWestAMR[NewWestAMR$`Reading Date` < newresult[["day"]][i] & 
+                                                           NewWestAMR$Lead_date >= newresult[["day"]][i],][,"Rate"]))
+}
+
+for(i in seq_along(newresult[["day"]])) {
+        NewCentraldailyuse[i] <- (sum(NewCentralAMR[NewCentralAMR$`Reading Date` < newresult[["day"]][i] & 
+                                                            NewCentralAMR$Lead_date >= newresult[["day"]][i],][,"Rate"])
+                                  / length(NewCentralAMR[NewCentralAMR$`Reading Date` < newresult[["day"]][i] & 
+                                                                 NewCentralAMR$Lead_date >= newresult[["day"]][i],][,"Rate"]))
+}
+
+
+
+
+
+
+
+
+for(i in seq_along(oldresult[["day"]])) {
+        OldEastdailyuse[i] <- (sum(OldEastAMR[OldEastAMR$`Reading Date` < oldresult[["day"]][i] & 
+                                                      OldEastAMR$Lead_date >= oldresult[["day"]][i],][,"Rate"])
+                               / length(OldEastAMR[OldEastAMR$`Reading Date` < oldresult[["day"]][i] & 
+                                                           OldEastAMR$Lead_date >= oldresult[["day"]][i],][,"Rate"]))
+}
+
+for(i in seq_along(oldresult[["day"]])) {
+        OldWestdailyuse[i] <- (sum(OldWestAMR[OldWestAMR$`Reading Date` < oldresult[["day"]][i] & 
+                                                      OldWestAMR$Lead_date >= oldresult[["day"]][i],][,"Rate"])
+                               / length(OldWestAMR[OldWestAMR$`Reading Date` < oldresult[["day"]][i] & 
+                                                           OldWestAMR$Lead_date >= oldresult[["day"]][i],][,"Rate"]))
+}
+
+for(i in seq_along(oldresult[["day"]])) {
+        OldCentraldailyuse[i] <- (sum(OldCentralAMR[OldCentralAMR$`Reading Date` < oldresult[["day"]][i] & 
+                                                            OldCentralAMR$Lead_date >= oldresult[["day"]][i],][,"Rate"])
+                                  / length(OldCentralAMR[OldCentralAMR$`Reading Date` < oldresult[["day"]][i] & 
+                                                                 OldCentralAMR$Lead_date >= oldresult[["day"]][i],][,"Rate"]))
+}
+
+
+newresult$East <- NewEastdailyuse
+newresult$West <- NewWestdailyuse
+newresult$Central <- NewCentraldailyuse
+
+oldresult$East <- OldEastdailyuse
+oldresult$West <- OldWestdailyuse
+oldresult$Central <- OldCentraldailyuse
+
+otherf <- other %>% select(`Serial Number`, `Reading Date`, Reading, Region) %>%
+        group_by(`Serial Number`) %>%
+        distinct(`Reading Date`, .keep_all = TRUE) %>% # removing multiple readings on same day
+        arrange(`Reading Date`) %>% # ensure all entries are in right order
+        mutate(Used = lead(Reading) - (Reading)) %>%
+        mutate(Period = as.numeric(lead(`Reading Date`) - `Reading Date`)) %>%
+        mutate(Rate = Used / Period) %>%
+        mutate(Lead_date = lead(`Reading Date`)) %>%
+        filter(Period > 14) %>% # removing very short time periods
+        filter(Used < 20000) # removing unusually large value - in markdown
+# say we've done this as there are a small number of values that seem anonymous
+
+"%ni%" <- Negate("%in%")
+
+# removing all of the entries for each meter that contains at least 1 negative 'Used'
+othernegused <- otherf %>% filter(Used < 0) %>%
+        select(`Serial Number`) %>% unlist()
+othernonegs <- otherf %>% filter(`Serial Number` %ni% othernegused)
+
+otherresult <- data.frame(day = x)
+Eastotheravgdailyuse <- c()
+Westotheravgdailyuse <- c()
+Centralotheravgdailyuse <- c()
+
+othernonegsdf <- as.data.frame(othernonegs)
+
+eastnonAMR <- filter(othernonegsdf, Region == "East")
+westnonAMR <- filter(othernonegsdf, Region == "West")
+centralnonAMR <- filter(othernonegsdf, Region == "Central")
+
+for(i in seq_along(otherresult[["day"]])) {
+        Eastotheravgdailyuse[i] <- (sum(eastnonAMR[eastnonAMR$`Reading Date` < otherresult[["day"]][i] & 
+                                                           eastnonAMR$Lead_date >= otherresult[["day"]][i],][,"Rate"])
+                                    / length(eastnonAMR[eastnonAMR$`Reading Date` < otherresult[["day"]][i] & 
+                                                                eastnonAMR$Lead_date >= otherresult[["day"]][i],][,"Rate"]))
+}
+
+for(i in seq_along(otherresult[["day"]])) {
+        Westotheravgdailyuse[i] <- (sum(westnonAMR[westnonAMR$`Reading Date` < otherresult[["day"]][i] & 
+                                                           westnonAMR$Lead_date >= otherresult[["day"]][i],][,"Rate"])
+                                    / length(westnonAMR[westnonAMR$`Reading Date` < otherresult[["day"]][i] & 
+                                                                westnonAMR$Lead_date >= otherresult[["day"]][i],][,"Rate"]))
+}
+
+for(i in seq_along(otherresult[["day"]])) {
+        Centralotheravgdailyuse[i] <- (sum(centralnonAMR[centralnonAMR$`Reading Date` < otherresult[["day"]][i] & 
+                                                                 centralnonAMR$Lead_date >= otherresult[["day"]][i],][,"Rate"])
+                                       / length(centralnonAMR[centralnonAMR$`Reading Date` < otherresult[["day"]][i] & 
+                                                                      centralnonAMR$Lead_date >= otherresult[["day"]][i],][,"Rate"]))
+}
+
+
+otherresult$East <- Eastotheravgdailyuse
+otherresult$West <- Westotheravgdailyuse
+otherresult$Central <- Centralotheravgdailyuse
+
+otherresultLong <- gather(otherresult, "Region", "AvgDailyUse", -day) %>% mutate(Meter = "nonAMR")
+newresultLong <- gather(newresult, "Region", "AvgDailyUse", -day) %>% mutate(Meter = "New AMR")
+oldresultLong <- gather(oldresult, "Region", "AvgDailyUse", -day) %>% mutate(Meter = "Old AMR")
+results <- rbind(otherresultLong, newresultLong, oldresultLong)
+
+#graphs
+
+AMRPlot <- function(data){
+        
+        plot <- ggplot(data) +
+                geom_line(aes(x = day, y = AvgDailyUse, col = Meter), size = 1.3) + 
+                labs(title = unique(data$Region),
+                     subtitle = "Daily Use by Meter Type",
+                     y = "Avg Daily Rate /m3",
+                     x = "Date") +
+                scale_x_date(labels = date_format("%d-%b-%y"), 
+                             breaks = c(as.Date("2017-4-1"), as.Date("2017-10-1"), as.Date("2018-3-31")), 
+                             limits = c(as.Date("2017-4-1"), as.Date("2018-4-1"))) + 
+                scale_y_continuous(limits = c(0.255,0.335)) + 
+                gg +
+                scale_color_manual(values = c(SEAMScolours[1], SEAMScolours[2], SEAMScolours[4]), 
+                                   labels = c("New AMR", "Non-AMR", "Old AMR")) +
+                #theme(legend.position="bottom") +
+                theme(legend.title = element_blank()) +
+                theme(axis.text.x = element_text(angle = 45, hjust = 1),legend.position = "bottom")
+        
+        return(plot)
+}
+
+AMR.analysis.list <- split(results,
+                           results$Region)
+
+AMR.plots <- lapply(AMR.analysis.list, AMRPlot)
+
+do.call(grid.arrange, c(AMR.plots , ncol=3))
+
+```
+
+
+With the exception of the Central region, it is notable that AMR Meters generally record a higher consumption than other meter types, with New AMR meters (those no more than five years of age) recording the highest consumption.
+
+These results should be taken in the context of the WRC report, which summarised that:
+
+* Overall MUR (meter under registration) for 15mm household meters is 8.76%, showing a significant deterioration in performance compared to 2017. 
+* Arad meters across Southern Water's meter stock are estimated to be under-reading by an average 9.34%. 
+* Other meters across Southern Water's meter stock are estimated to be under-reading by an average of 7.18%.
+
+If it is indeed the case that meters are under-recording, this likely to have a significant effect on the leakage calculation.  As an example, it is assumed below that household consumption is, in fact, at the same level for all properties as it is for those with AMR meters less than five years old.
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide', fig.width=9, fig.height = 8}
+
+ifAllAMRresults <- fread("Hyp7.4.ifAllAMRresults.csv")
+totresult <- fread("Hyp7.4.AMRtotresult.csv")
+ifresult <- fread("Hyp7.4.AMRifresult.csv")
+
+ifAllAMRresults$day <- ymd(ifAllAMRresults$day)
+totresult$day <- ymd(totresult$day)
+ifresult$day <- ymd(ifresult$day)
+
+AMRPlot <- function(data){
+
+       plot <- ggplot(data) +
+               geom_line(aes(x = day, y = RATE, col = Meter), size = 1.3) +
+               labs(#title = unique(data$Region),
+                       subtitle = "Potential Additional Household Consumption",
+                       y = "Total Daily Rate /m3",
+                       x = "Date") +
+               scale_x_date(labels = date_format("%d-%b-%y"),
+                            breaks = c(as.Date("2017-4-1"), as.Date("2017-10-1"), as.Date("2018-3-31")),
+                            limits = c(as.Date("2017-4-1"), as.Date("2018-4-1"))) +
+               scale_y_continuous(labels = scales::comma, breaks = c(0, 50000, 100000, 150000, 200000, 250000)) +
+               theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") +
+               gg +
+               scale_color_manual(values = c(SEAMScolours[2], SEAMScolours[1]),
+                                  labels = c("Potential Additional Household Consumption", "Actual Household Consumption")) +
+               theme(legend.position="bottom") +
+               theme(legend.title = element_blank()) +
+               geom_ribbon(data = ifresult, aes(x = day, ymin = 0, ymax = RATE),
+                           fill = SEAMScolours[2], alpha = 1) +
+               geom_ribbon(data = totresult, aes(x = day, ymin = 0, ymax = RATE),
+                           fill = SEAMScolours[1], alpha = 1)
+
+       return(plot)
+}
+
+AMRPlot(ifAllAMRresults)
+```
+
+In this scenario, metered household consumption in the 2017-18 financial year would have been `r round((mean(ifresult$RATE) - mean(totresult$RATE)) * 365 / 1000000, 2)` Megalitres higher.
+
+
+# **Recommendations**
+
+In some DMAs there is an apparent discrepancy between Consumption and Nightflow.  Some of these appears to be as a result of property data discrepancies, most likely due to new property growth.  However, some discrepancies betweeen Consumption, Nightflow and various property counts, may be for other reasons.  It is therefore recommended that Southern Water investigate and comment on these.  The findings of this would be used to direct future investigations into consumption estimates.
+
+With regard to AMR meters, an enhancement could be made to the consumption estimates based on additional metering data, covering years prior to 2018.  This may enable more accurate estimations of consumption.  This could be combined with WRC Meter Under-Registration estimates, to estimate the effect of this on the Leakage calculation, in the manner as demonstrated in section 4.2.

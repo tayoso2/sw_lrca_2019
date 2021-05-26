@@ -1,0 +1,734 @@
+---
+title: "Southern Water Leakage Root Cause Analysis - Hypothesis 4: NRR Behaviours"
+output:
+    html_document:
+      theme: yeti
+      toc: true
+      toc_float: 
+        collapsed: false
+        smooth_scroll: true
+      number_sections: true
+---
+
+
+```{r echo=FALSE,message=FALSE, warning = FALSE, results = 'hide'}
+#reading in librarys
+library(tidyverse)
+library(dplyr)
+library(leaflet)
+library(gridExtra)
+library(data.table)
+library(modelr)
+library(knitr)
+library(ggplot2)
+library(scales)
+library(mapview)
+library(sp)
+library(sf)
+library(tmap)
+library(lubridate)
+library(zoo)
+
+
+# If running script offline set to TRUE. If in EDA set to FALSE
+offline <- TRUE
+
+# Load in Files
+if(offline == TRUE){
+  args <- c("",
+            "DMA category analysis.csv",
+            "gis.shp",
+            "Nightflow.csv",
+            "Raw data/Nightflow Mastersheet_sheet_6.csv", 
+            "LeakageDetectionEffort v2.csv", 
+            "DMA Lookup.csv", 
+            "DMA category analysis v5.csv", 
+            "Household_meter_reads.csv",
+            "MeteredBy2015.csv",
+            "DMA_Category_Geometry.shp", 
+            "New_Mains_DATE_LAID_1999_DMA.csv", 
+            "Replacement Pipe DMA Summary.csv", 
+            "Replacement_Length_Nightflow_Change_Summary.csv", 
+            "WW_Nightflow_Change_Summary.csv",
+            "Proportion of UMP Meters Installed by Year.csv",
+            "comms pipes.csv"
+            )
+}else{
+  args <- commandArgs(trailingOnly = TRUE)
+  setwd(args[1])
+}
+dma <- read_csv(args[2])
+gis <- st_read(args[3])
+nightflow <- read_csv(args[4])
+data <- read_csv(args[5]) #reading in vlookup data
+leakage.detection.effort <- data.table(read.csv(args[6]), stringsAsFactors = FALSE)
+dma.lookup <- data.table(read.csv(args[7]), stringsAsFactors = FALSE)
+dma.classification <- data.table(read.csv(args[8]), stringsAsFactors = FALSE)
+dma.classification1 <- data.table(read.csv(args[8]), stringsAsFactors = FALSE)
+meter.readings <- data.table(read.csv(args[9]), stringsAsFactors = FALSE)
+MeteredBy2015 <- data.table(read.csv(args[10]), stringsAsFactors = FALSE)
+dma_x <- st_read(args[11])
+mains.replacements <- data.table(read.csv(args[12]))
+replacement.mains.summary <- data.table(read.csv(args[13]))
+replacement.length.nightflow.change.summary <- data.table(read.csv(args[14]))
+ww.nightflow.change.summary <- data.table(read.csv(args[15]))
+ump <- data.table(read.csv(args[16]))
+comms <- data.table(read.csv(args[17]))
+
+
+
+SEAMScolours <- c("#1F497D", "#C2332F", "#FFC000", "#00B050", "#F5750B", "#399BB6",
+                  "#999999", "#0072B2", "#D55E00", "#E69F00", "#009E73", "#56B4E9",
+                  "#CC79A7", "#F0E442")
+
+#setting ggplot 
+gg <- theme_bw() +
+  theme(legend.position = "bottom") 
+
+```
+
+**Version 3.1** 
+
+# **Executive Summary**
+
+The aim of this hypothesis is to investigate the correlation between Natural Rate of Rise (NRR) and various capital programmes.  DMAs have been classified based on changes in Nightflow data over time, namely Jumper (sudden increase or decrease over time), Creeper (prolongued and steady increase or decrease over time) and Stable (little change and variance over time).
+
+This nightflow data has been compared with capital programmes, including Mains Replacement; at the time of writing, there is a small amount of evidence to suggest that leakage increases can be suppressed by increasing the volume of mains replacement, although this is inconclusive; further investigation is recommended to prove or disprove this.
+
+In addition, Nightflow data has been correlated with Leakage Detection Effort; the findings from this suggested that, while a large amount of effort was focussed on those DMAs which later reported a high leakage increase, there is otherwise some evidence to suggest that there is a relationship between increased labour hours and a relative suppression of increase in leakage.
+
+Furthermore, the available Nightflow data has been correlated with Universal Metering Programme (UMP) data, in order to begin investigations into the hypothesis that this programme affected leakage in addition to reducing short term demand.  No correlation has yet been found, although the most useful data is not yet available - at the time of writing, Nightflow data is not available prior to 2015.
+
+# **Experiments**
+
+## **Experiment 4.1: NRR Behaviours**
+
+It is hypothesised that detection efforts, and a number of capital programmes, have an effect on leakage.  This experiment is therefore linked to experiments in Hypothesis 2, in addition to those mentioned below, in seeking to determine possible correlations between these programmes and leakage.  As such, these experiments are also included in this report.
+
+## **Experiment 2.1: Mains Replacement**
+
+This experiment takes the results of Experiment 4.1 and compares these with historic mains replacement data, in order to seek to determine the relationship between these.
+
+## **Experiment 2.6: Leakage Detection Effort**
+
+This experiment takes the results of Experiment 4.1 and compares these with historic leakage detection effort, in order to seek to determine the relationship between these.
+
+Leakage Detection Effort is also compared with the material compositions of DMAs, as derived in Experiment 3.1.
+
+## **Experiment 2.7: Universal Metering Programme**
+
+This experiment takes the results of Experiment 4.1 and compares these with meter installation dates, in order to seek to determine the relationship between the UMP, leakage and consumption.
+
+
+
+
+
+# **Data**
+
+The following datasets are used in the investigation of this hypothesis:
+
+## **DMA Nightflow Data**
+
+This data was sourced from the Nightflow Mastersheet Workbook, detailing monthly Nightflow volumes from 2015 to 2018 inclusive.
+
+### **DMA Grouping**
+
+The first stage of this analysis is to statistically classify DMAs.  The categories chosen are Jumper (sudden increase or decrease over time), Creeper (prolongued and steady increase or decrease over time) and Stable (little change and variance over time).
+
+A small amount of cleansing is carried out on this data; a value of zero is assumed to indicate no data, and values greater than two times, or less than half, the mean value over four years for the same DMA are assumed to be anomalous and excluded from the analysis.
+
+To eliminate seasonal variance from the analysis, moving averages are then derived for each 12 month period within the analysis.  These moving averages are then compared to the overall mean nightflow for the same DMA.
+
+The leakage change over time is analysed statistically and tested for significance; DMAs are identified as creepers when a consistent change is observed, which could either be an increase or a decrease.
+
+Jumper DMAs are currently identified as those where there exist a period of 6 months in which 5 of these record a moving average of monthly nightflow less than 0.8 times the overall DMA average, followed by an increase over 2 months, after which 5 of the following 6 months record a moving average of monthly nightflow more than 1.2 times the overall DMA average.  Using the same method in reverse, Jumper DMAs in which a relatively sudden decrease has taken place are identified.
+
+There is no evidence to suggest, using this method of identifying Jumper DMAs, that the 'Beast from the East' extreme weather event in early 2018 affected any particular DMA in this manner.  Instead, it is likely that the rise in leakage observed by Southern Water at this time has been more generally spread across the network.
+
+DMAs with no more than 5% change, from the 2015 to the 2018 average nightflow, and with less than 12 months in this period more than 20% either side of the 4-year average nightflow, are classified as Stable.
+
+DMAs in which none of the above effects are observed are classified as Other.  Collectively, these account for an increase in Nightflow of approximately 15%, similar to the company-wide increase of 16% over the same period.
+
+Where there is incomplete data over the four year period, the DMA is classified as having Insufficient Data.
+
+An example of nightflow readings over time for one DMA in each of these categories is displayed below.
+
+```{r echo=FALSE, fig.height=5,fig.width=10, message=FALSE, warning = FALSE}
+
+gis <- gis %>% 
+    mutate(DMA_Dsc = paste(DMA_Dsc,DMA_Ref,sep = "-"))
+gis <- gis[!duplicated(gis$DMA_Dsc),]
+gis <- st_as_sf(gis, crs = 27700)
+
+dma <- dma %>% 
+    mutate(DMA_Description = paste(DMA_Description,DMA_Ref,sep = "-"))
+dma.1 <- dma[,c(1,2,52)]
+non_dup <- dma.1[!duplicated(dma.1$DMA_Description),] 
+dma.2 <- inner_join(x=gis,y=non_dup,by = c("DMA_Dsc" = "DMA_Description"))
+dma.2 <- dma.2[,c(2,18,19)]
+dma.2 <- st_as_sf(dma.2, crs = 27700)
+
+dma.4 <- dma %>% dplyr::filter(DMA_Description %in% c("Hollington 1-BA07", "Silverhill Parkview-BA09", "Northwood PRV Direct-AH06", "East Cowes PRV-AH10", "Burnham Close-AN01", "Bridge PMA-AD12"))
+# dma.4 <- dma.4[,c(1:50,54)]
+#dma.4 <- st_set_geometry(dma.4, NULL)
+dma.4 <- dma.4[c(5,6,2,3,4,1),]
+dma.5 <- gather(dma.4, Date, Value, "Jan-15":"Jan-19", factor_key=TRUE)
+dma.5$nDate <- as.yearmon(dma.5$Date,format = "%b-%y")
+dma.5$nDate <- paste("01 ", dma.5$nDate, sep = "")
+dma.5$nDate  <- dmy(dma.5$nDate)
+
+p <- ggplot(dma.5) +
+         geom_line(aes(x = nDate, y = Value, col = DMA_Description),size=1.3) + 
+         labs(title = "DMA Sample Survey", y = "Volume", x = "Month")+ 
+         theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + gg +
+         scale_x_date(labels = date_format("%b-%y"), breaks = "4 month") 
+
+p + scale_color_manual(labels = c("Bridge PMA-AD12 (Other)", "Burnham Close-AN01 (Jumper - Decrease)", "East Cowes PRV-AH10 (Creeper - Decrease)", "Hollington 1-BA07 (Jumper - Increase)", "Northwood PRV Direct-AH06 (Stable)", "Silverhill Parkview-BA09 (Creeper - Increase)"), values = c("gray90", "blue3","forestgreen","red3","gold1","orange2")) 
+```
+
+The distribution of DMAs into these categories is as follows.
+
+```{r echo=FALSE, fig.height=5, message=FALSE, warning = FALSE}
+dma %>%
+  mutate(Category = fct_relevel(Category, "Jumper - Increase", "Creeper - Increase", "Stable", "Creeper - Decrease", "Jumper - Decrease", "Other", "Insufficient Data")) %>%
+  ggplot(aes(Category)) + 
+  geom_bar(fill = c("red3","orange2","gold1","forestgreen","blue3","gray90","grey"),color = "black") +
+  labs(title = "DMA Grouping", y = "Count", x = "Category") + gg + 
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+### **DMA Spatial Analysis**
+
+The map below provides a graphical visualisation of DMAs according to the categories identified above.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE, results = 'hide'}
+
+dma.2 %>%
+  mutate(Category = fct_relevel(Category, "Jumper - Increase", "Creeper - Increase", "Stable", "Creeper - Decrease", "Jumper - Decrease", "Other", "Insufficient Data"))
+
+```
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+tmap_mode("view")
+tm_shape(dma.2) + tm_polygons("Category", alpha = 0.75, palette = c("forestgreen","orange2","grey","blue3","red3","gray90","gold1")) + tm_basemap("Esri.WorldStreetMap")
+
+```
+
+
+
+## **Mains Replacement**
+
+### **Mains Replacement Summary**
+
+This data summarises all pipes laid since 1999.  This was filtered to include only those pipes laid in the calendar years of 2016 and 2017; this is to allow a full year of leakage data (derived from Nightflow data) both before and after all pipe installation.
+
+In order to distinguish between pipes laid as a result of new growth, and replacement of existing pipes, spatial analysis was carried out.  Pipes at least five metres from the nearest abandoned main are assumed to be new growth, and are thus excluded from this analysis.  This leaves total of **`r round(sum(mains.replacements[Replace > 0][substr(DATE_LAID, nchar(as.character(DATE_LAID)) - 9, nchar(as.character(DATE_LAID)) - 6) %in% c(2016, 2017)]$PIPE_LENGT) / 1000)`km** of pipe.
+
+A sample of this data, with some columns removed for clarity, is as follows.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+kable(head(mains.replacements[substr(DATE_LAID, nchar(as.character(DATE_LAID)) - 9, nchar(as.character(DATE_LAID)) - 6) %in% c(2016, 2017), .(ASSET_ID, DATE_LAID, PIPE_LENGT, DMA_Ref)]), digits = 2)
+
+```
+
+This data was then summarised, in order to analyse the quantity of new pipe in each DMA, as follows.  Replacement pipe was laid in a total of 98 DMAs in 2016 and/or 2017.
+
+In DMAs where, of all replacement pipes laid in a DMA in 2016 and 2017, all replacement pipes were laid in a single month, the average monthly nightflow of the 12 months immediately before this was compared to the average monthly nightflow of the 12 months afterwards.
+
+In DMAs where work was carried out over more than one month in 2016 and 2017, the work was deemed to have nominally started in the month when at least the first 10% of work (in terms of length) was completed.  The work was deemed to have nominally finished in the month in which at least 90% of the work had been completed.  The average monthly nightflow of the 12 months before the nominal start month was then compared to the average monthly nightflow of the 12 months after the nominal end date.
+
+Only those DMAs with 12 months of nightflow data both before and after the work being completed, of which there are **`r nrow(replacement.mains.summary)`**, were included in the analysis.
+
+An example of this data is as follows.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+kable(head(replacement.mains.summary), digits = 2)
+
+```
+
+DMAs in which new pipe was laid were divided in deciles, from the least amount of replacement pipe installation to the most.  The average percentage change in nightflow (from the 12-month average before work started to the 12-month average after work finished) was then calculated for each of these deciles.  The results of this analysis are displayed below.  There is a small amount of evidence to suggest that leakage can be reduced with large amounts of pipe replacement, although this is inconclusive.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+replacement.length.nightflow.change.summary$Change <- ((replacement.length.nightflow.change.summary$After / replacement.length.nightflow.change.summary$Before) - 1) * 100
+
+ggplot(replacement.length.nightflow.change.summary, aes(Decile, Change)) + geom_bar(stat = "identity", fill = "grey", color = "black") + gg + scale_x_continuous(name = "DMAs by Deciles of Pipe Installation Quantity (Low to High)", breaks = c(1:10)) + scale_y_continuous(name = "Average Percentage Nightflow Change (Before vs After Pipe Installation)") + labs(title = "Quantity of Replacement Pipe Installation compared to Leakage Change")
+
+```
+
+### **Woolmans Wood Analysis**
+
+It was noted by Southern Water that a large amount of pipe replacement was carried out in the Woolmans Wood area of Kent.  The results of the above analysis, by DMA, are shown below; this is the change in the average monthly from the 12 months before work being carried out, to the 12 months afterwards.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+ww.nightflow.change.summary$Change <- ((ww.nightflow.change.summary$After / ww.nightflow.change.summary$Before) - 1) * 100
+
+ggplot(ww.nightflow.change.summary, aes(DMA, Change)) + geom_bar(stat = "identity", fill = "grey", color = "black") + gg + scale_x_discrete(name = "DMA and date of replacement works") + scale_y_continuous(name = "Average % Nightflow Change (Before vs After Pipe Installation)") + labs(title = "Leakage Change in Woolmans Wood DMAs") + 
+         theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## **Leakage Detection Effort**
+
+This was provided by Southern Water in the form of spreadsheets.
+
+In order to correlate with Leakage (derived from Nightflow data as described above), this was filtered to include only the effort in the calendar years of 2016 and 2017.
+
+DMAs were filtered to include only those with sufficient valid Nightflow data to create an average for both 2015 and 2018.
+
+An example of this data is shown below.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+kable(head(select(leakage.detection.effort[substr(as.character(Completion.D.Date), nchar(as.character(Completion.D.Date)) - 3, nchar(as.character(Completion.D.Date))) %in% c(2016, 2017)], County, Standard.Job.No, DMA.Code, Actual.Labour.Hours, Maintainance.Type, Completion.D.Date)), caption = "Data example", digits = 2)
+
+```
+
+## **Universal Metering Programme Data**
+
+This is derived from the 2018-19 Household Meter Readings Data; it is assumed that any meter installed from 1 April 2010 to 31 March 2015 was installed under the UMP.
+
+An example of this data is shown below.
+
+```{r echo=FALSE,message=FALSE, warning = FALSE}
+
+kable(head(select(meter.readings[substr(as.character(Installation.Date), nchar(as.character(Installation.Date)) - 9, nchar(as.character(Installation.Date)) - 6) %in% c(2011, 2012, 2013, 2014)], Serial.Number, Device.Category, Installation.Date, Reading, Premise.Type, Post.Code)), caption = "Data example", digits = 2)
+
+```
+
+This data was spatially joined to DMAs using the Postcode field.  From this, it was possible to estimate the percentage completion of the Universal Metering Programme in each DMA by 31 March 2015.  This is based on the assumption that all households are represented in the 2018-19 metering data, and that DMA assignment has been approximated where a postcode straddles DMA boundaries.  The percentage completion, by DMA, is illustrated below.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+gis_combine2 <- left_join(MeteredBy2015,as.data.frame(dma_x), by = "DMA_Ref")
+gis_combine2 <- st_as_sf(gis_combine2, crs = 27700)
+#gis_combine2$Category <- as.character(gis_combine2$Category)
+#gis_combine2$Category[which(is.na(gis_combine2$Category))] <- "Insufficient Data"
+#gis_combine2$Category[gis_combine2$Category == "No Data"] <- "Insufficient Data"
+gis_combine2 <- gis_combine2 %>%  mutate(Proportion_Installed_by_2015 = X2015)
+gis_combine2$X2015 <- NULL
+gis_combine2$Category <- NULL
+gis_combine2 <- st_as_sf(gis_combine2, crs = 27700)
+tmap_mode("view")
+tm_shape(gis_combine2) + tm_polygons("Proportion_Installed_by_2015", alpha = 0.75) + tm_basemap("Esri.WorldStreetMap")
+
+```
+
+
+The overall increasing proportion of meters installed through the UMP timeframe is shown below (data for each year indicates the position at 31 March).
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE, results = 'hide',cache = TRUE}
+
+
+hh <- fread("Household_meter_readsWB.csv")
+postcodes <- read.csv("postcodes_data.csv", header = FALSE, stringsAsFactors = FALSE)
+nombres <- as.character(postcodes[1,])
+names(postcodes) <- nombres
+postcodes <- postcodes[-1,]
+postcodes$X_Latitude <- as.numeric(postcodes$X_Latitude)
+postcodes$Y_Longitude <- as.numeric(postcodes$Y_Longitude)
+hh$`Reading Date` <- substring(hh$`Reading Date`, 1, (nchar(hh$`Reading Date`) -9))
+hh$`Reading Date` <- dmy(hh$`Reading Date`)
+hh$`Installation Date` <- substring(hh$`Installation Date`, 1, (nchar(hh$`Installation Date`) -9))
+hh$`Installation Date` <- dmy(hh$`Installation Date`)
+hh$`Post Code` <- str_replace_all(hh$`Post Code`, " ", "")
+postcodes$PCD <- str_replace_all(postcodes$PCD, " ", "")
+names(hh)[17] <- "PostCode"
+hhpc <- left_join(hh, postcodes, by = c("PostCode" = "PCD"))
+names(hhpc)[23:24] <- c("X_Longitude", "Y_Latitude")
+
+# simply dropping the orignal NAs in long/lat:
+hhpcsimpledrop <- hhpc %>% drop_na(X_Longitude, Y_Latitude)
+
+hhpc_sf4326 <- st_as_sf(hhpcsimpledrop, coords = c("X_Longitude", "Y_Latitude"), crs = 4326)
+
+# DMA polygons
+DMAs <- st_read("gis.shp")
+DMA4326 <- st_transform(DMAs, crs = 4326)
+```
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE,cache = TRUE}
+
+
+# points in polygons
+metersinDMAs4326 <- st_join(hhpc_sf4326, DMA4326, join = st_intersects)
+# in markdown can say that this would be more accurate if they provided us with 
+# the DMA of each meter as we have to rely on spatial mapping by centroids
+
+# joining no. households to hh
+metersinDMAs4326dropgeom <- st_drop_geometry(metersinDMAs4326)
+hh <- select(metersinDMAs4326dropgeom, `Serial Number`:PostCode, DMA_Ref:DMA_Dsc) %>%
+        drop_na(DMA_Ref)
+hh$DMA_Ref <- as.character(hh$DMA_Ref) # table() was showing 0 values for the drop_na()'d DMAs
+hh$DMA_Dsc <- as.character(hh$DMA_Dsc)
+
+houses <- read.csv("DMA PMA counts 2018-19.csv", stringsAsFactors = FALSE, skip = 1)
+houses <- houses %>% mutate(housecount = Now.ABP.Addresspoint_Count, DMA_Ref1 = DMA_Ref) %>%
+        select(DMA_Ref1, housecount) 
+
+hh <- left_join(hh, houses, by = c("DMA_Ref" = "DMA_Ref1"))
+hh <- filter(hh, housecount > 0)
+
+# setting UMP year bin: year is for those meters installed by the start of that financial year
+
+hh$UMPYearBin <- cut(as.numeric(hh$`Installation Date`),
+                     breaks = c(0,15065, 15431, 15796, 16161, 16526, 99999), # starts of financial years
+                     labels = c("2011", "2012", "2013", "2014", "2015", "AfterUMP"))
+
+# Calculating proportion of distinct meters/households per DMA
+
+mh <- hh %>% distinct(`Serial Number`, .keep_all = TRUE) %>%
+        group_by(DMA_Ref) %>%
+        summarise(houseDMA = mean(housecount),
+                  y2011 = sum(UMPYearBin == "2011"),
+                  y2012 = sum(UMPYearBin == "2012"),
+                  y2013 = sum(UMPYearBin == "2013"),
+                  y2014 = sum(UMPYearBin == "2014"),
+                  y2015 = sum(UMPYearBin == "2015"),) 
+
+mhcalcs <- mh %>% 
+        mutate("2011" = y2011 / houseDMA,
+               "2012" = (y2011 + y2012) / houseDMA,
+               "2013" = (y2011 + y2012 + y2013) / houseDMA,
+               "2014" = (y2011 + y2012 + y2013 + y2014) / houseDMA,
+               "2015" = (y2011 + y2012 + y2013 + y2014 + y2015) / houseDMA,)
+
+mhpercs <- mhcalcs %>% 
+        mutate("2011" = `2011` * (1/`2015`),
+               "2012" = `2012` * (1/`2015`),
+               "2013" = `2013` * (1/`2015`),
+               "2014" = `2014` * (1/`2015`),
+               "2015" = `2015` * (1/`2015`),)
+
+DMApropsby2015 <- mhcalcs %>% mutate(DMA_Ref1 = DMA_Ref) %>% select(DMA_Ref1, `2015`) 
+
+# summing all DMAs
+summh <- mh %>% summarise(houseDMA = sum(houseDMA),
+                          y2011 = sum(y2011),
+                          y2012 = sum(y2012),
+                          y2013 = sum(y2013),
+                          y2014 = sum(y2014),
+                          y2015 = sum(y2015))
+
+summh <- summh %>% mutate("2011" = y2011 / houseDMA,
+                          "2012" = (y2011 + y2012) / houseDMA,
+                          "2013" = (y2011 + y2012 + y2013) / houseDMA,
+                          "2014" = (y2011 + y2012 + y2013 + y2014) / houseDMA,
+                          "2015" = (y2011 + y2012 + y2013 + y2014 + y2015) / houseDMA,)
+sumcalcs <- select(summh, `2011`:`2015`) %>%
+        gather(Year)
+
+# plotting proportion of metered houesholds bar chart
+
+sumcalcs %>%
+        ggplot(aes(x = Year,y = value)) +
+        geom_bar(stat = "identity", fill = SEAMScolours[1]) +
+        gg +
+        labs(x = "Financial Year",y = "Proportion of Households with Meters") +
+        scale_y_continuous(limits = c(0,1)) +
+        labs(title = "Increase in Metered Households during UMP")
+
+```
+
+In order to take into account the size of the DMA, Nightflow data, covering the period from 1 April 2015 to 31 March 2016, was divided by the estimated number of properties in the DMA (as per Addresspoint data), to derive a Nightflow per Property (in future it would be advisable to derive a Nightflow per kilometre of pipe within the DMA).  
+
+In order to observe whether leakage is generally estimated to be higher in areas of recent high UMP activity, DMAs were categorised as being of either High, Medium or Low UMP activity and their leakage assessed. High UMP DMAs were categorised as having at least 40% of meters installed in the 2014-2015 financial year, Medium as having between 40% and 20% installed in the same year, and Low as having under 20% installed in the same year. Based on the current data, although High UMP DMAs tend to have a slightly higher mean than Low UMP DMAs, there seems to be very little effect of UMP on leakage.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+# LEAKAGE NIGHTFLOW     
+night <- read.csv("DMA category analysis v4.csv", stringsAsFactors = FALSE)
+night <- select(night, DMA.Code, Average_Nightflow_2015, Average_Nightflow_2018)
+
+hh <- left_join(hh, night, by = c(DMA_Ref = "DMA.Code"))
+hh <- mutate(hh, Nightflow2015byProperty = Average_Nightflow_2015 / housecount)
+hh <- mutate(hh, Nightflow2018byProperty = Average_Nightflow_2018 / housecount)
+hh <- left_join(hh, DMApropsby2015, by = c(DMA_Ref = "DMA_Ref1"))
+
+hhdist <- distinct(hh, DMA_Ref, .keep_all = TRUE)
+hhdist$`2015` <- ifelse(hhdist$`2015` > 1, 1, hhdist$`2015`)
+
+# new duo bar chart for UMP effect on leakage
+
+major2015DMAs <- unlist(mhpercs %>% filter(`2014` < 0.6) %>% # lots of UMP in 2015
+                                select(DMA_Ref))
+
+minor2015DMAs <- unlist(mhpercs %>% filter(`2014` >= 0.8) %>% # little UMP done by 2015
+                                select(DMA_Ref))
+
+medium2015DMAs <- unlist(mhpercs %>% filter(`2014` <= 0.8 & `2014` > 0.6) %>% # little UMP done by 2015
+                                 select(DMA_Ref))
+
+hhdistmajor2015 <- filter(hhdist, DMA_Ref %in% major2015DMAs)
+hhdistmedium2015 <- filter(hhdist, DMA_Ref %in% medium2015DMAs)
+hhdistminor2015 <- filter(hhdist, DMA_Ref %in% minor2015DMAs) %>% filter(Nightflow2015byProperty < 200)
+
+ggplot(data = hhdistmajor2015, aes(x = "High UMP DMAs",
+                                   y =Nightflow2015byProperty, fill = SEAMScolours[4])) + geom_boxplot() +
+        geom_boxplot(data = hhdistminor2015, aes(x = "Low UMP DMAs",
+                                                 y = Nightflow2015byProperty, fill = SEAMScolours[2])) +
+        geom_boxplot(data = hhdistmedium2015, aes(x = "Medium UMP DMAs",
+                                                  y = Nightflow2015byProperty, fill = SEAMScolours[5])) +
+        labs(title = "Effect of UMP on Leakage", 
+             y = "2015 Leakage (Nightflow per Household)", x = "Extent of UMP in DMAs")+ 
+        theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + gg +
+        scale_y_continuous(limits = c(0, 15)) + coord_flip() + 
+        scale_fill_manual(values = SEAMScolours[c(2,4,5)]) + guides(fill = FALSE) +
+        scale_x_discrete(limits = c("Low UMP DMAs", "Medium UMP DMAs", "High UMP DMAs"))
+
+```
+
+It is therefore recommended that Nightflow data dating back to at least 2010 is supplied; this would enable a comparision to be made of Nightflow before, during and after the completion of the UMP.  Additionally, consumption data over the same period would enable the effect of demand changes following metering to be considered.
+
+**Impact of UMP Digs on Leakage**
+        
+Currently there is insufficient data to analyse the effect of meter installation which required digs; this data may exist in Ellipse, however this contains only 1,532 records with the text 'Dig' appearing in the Work Order Description, of which only 8% were completed during the UMP timeframe.  Therefore, due to the small sample size, the effect of digs has not been investigated any further. 
+
+**Leakage Detection Effort Work Order Change Over Time**
+
+Leakage Detection Effort Work Order data was analysed for the four years following the end of the UMP, focussing on the sum totals of labour hours attributed to each Work Order type.  Principal findings are that has been an overall trend of increasing labour hours, particularly in those Work Orders labelled as 'Investigate' and 'Survey'.  Note that in the following plot, many Work Order types are obscured due to the vast majority of labour hours going to Investigations and Surveys.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+f15 <- fread("Detection_Effort_Details 2015 16.csv", skip = 5) %>% 
+        select(`Actual Labour Hours`, `Report Type`) %>%
+        mutate(Year = "2015-16")
+f16 <- fread("Detection_Effort_Details 2016 17.csv", skip = 5) %>% 
+        select(`Actual Labour Hours`, `Report Type`) %>%
+        mutate(Year = "2016-17")
+f17 <- fread("Detection_Effort_Details 2017 18.csv", skip = 5) %>% 
+        select(`Actual Labour Hours`, `Report Type`) %>%
+        mutate(Year = "2017-18")
+f18 <- fread("Detection_Effort_Details 2018 19.csv", skip = 5) %>% 
+        select(`Actual Labour Hours`, `Report Type`) %>%
+        mutate(Year = "2018-19")
+
+allyears <- rbind(f15, f16, f17, f18)
+allyears <- allyears[complete.cases(allyears$`Actual Labour Hours`) & allyears$`Report Type` != "",]
+
+allyears %>% filter(`Report Type` == "INVESTIGATE" | `Report Type` == "SURVEY") %>%
+        group_by(Year, `Report Type`) %>%
+        summarise(Sums = sum(`Actual Labour Hours`)) %>%
+        mutate(Sums = Sums + 1) %>% # for log scale
+        ggplot(aes(x = Year, y = Sums, fill = `Report Type`)) + 
+        scale_y_continuous(labels = scales::comma, 
+                           breaks = c(0, 100000, 200000, 300000),
+                           limits = c(0, 300000)) +
+        theme_bw() +
+        geom_col() +
+        theme(legend.position = "bottom") +
+        labs(title = "Change in Detection Effort Workorders in the Years Following UMP",
+             y = "Summed Labour Hours",
+             x = "Year",
+             fill = "Workorder Type") +
+        scale_fill_manual(values = SEAMScolours[c(5,14)])
+
+```
+
+**Relationship between UMP and Comms Pipe Jobs**
+
+A dataset detailing Comms Pipes Jobs, during the previous AMP, was supplied by Southern Water.  This partially contained DMA data, but where the DMA was not populated in the data, this was approximated using the postcode recorded against the job, which was spatially mapped to a DMA.
+
+It should be noted that these jobs are reasonably evenly distributed over time.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+# comms pipe jobs for each *financial year* before any analysis
+fin_year <- comms %>% group_by(date1) %>%  summarise(n = n())
+fin_year %>%  ggplot(aes(date1, n), position = "dodge") + 
+  geom_bar(aes(),fill= SEAMScolours[1], col = "black", stat = "identity") + 
+  scale_fill_manual(values=c("red3","orange2")) + gg +
+  labs(title = "Comms Pipes Jobs in each Financial Year",
+       x = "Year",
+       y = "Number of Jobs")
+
+```
+
+The UMP data, as described above, was analysed to determine the financial year in which the majority of work, within each DMA, was completed.  Only those DMAs in which at least 50% of the UMP work was completed in a single financial year were included in this analysis - a total of 693 DMAs.
+
+In order to investigate the potential effect of the UMP on Comms Pipes Jobs, the number of jobs in the financial year prior to the majority of UMP work being carried out, in a single DMA, was compared with the number of jobs in the financial year after the majority of UMP work (i.e. two years later).
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+ump1 <- ump %>% gather(Year1, Value, X2011:X2015, factor_key=FALSE)
+ump2 <- ump1 %>%  filter(Value > 0.5) %>% select(DMA_Ref, Year1) %>% unique()
+ump2$Year1 <-  substring(ump2$Year1,2,5)
+ump2$Year1 <- as.numeric(ump2$Year1)
+# compare the number of jobs in the Comms Pipe data in the year before the UMP work, to the number of jobs the year after #
+comms_ump <- comms %>% left_join(ump2, by = c("District.Meter.Area"= "DMA_Ref")) %>% 
+  filter(!is.na(Year1)) %>%  filter(Year1 > 2011)
+comms_ump$date1 <- substring(comms_ump$date1, 6,9)
+before <- comms_ump %>% group_by(District.Meter.Area)  %>%  filter(date1 == Year1 - 1) %>% 
+  summarise(comms.pipes.jobs = n()) %>%  mutate(Category = "Before")
+after <- comms_ump %>% group_by(District.Meter.Area) %>%  filter(date1 == Year1 + 1)  %>% 
+  summarise(comms.pipes.jobs = n()) %>%  mutate(Category = "After")
+overall <-  rbind(before, after)
+overall2 <-  spread(overall,key = Category, value = comms.pipes.jobs) %>% 
+  mutate(Before = replace_na(Before,0)) %>% 
+  mutate(After = replace_na(After,0)) %>% 
+  select(District.Meter.Area, Before, After)
+overall$Category <- fct_relevel(overall$Category, "Before", "After")
+overall %>%  group_by(Category) %>% summarise(Total=sum(comms.pipes.jobs)) %>% 
+  ggplot(aes(Category, Total), position = "dodge") + 
+  geom_bar(aes(fill = Category), col = "black", stat = "identity") + 
+  #scale_x_continuous(name = "Day", breaks = c(1:10)) + 
+  #scale_y_continuous(name = "Total Consumption by Category /m3") + 
+  scale_fill_manual(values=SEAMScolours[c(1,5)]) + gg +
+  labs(title = "Change in Comms Pipes Job in Years prior to and following UMP work")
+
+```
+
+It is noticeable that, despite the overall number of Comms Pipes Jobs being relatively stable over time, there is an increase in these around the area and time of significant UMP work.  This essentially suggests that, while the overall resource remained reasonably constant, this was allocated more specifically towards areas of recent UMP work.
+
+However, Southern Water should consider whether the increase in the 'After' position is at least partially explained continuing, proactive UMP work being logged as Comms Pipes Jobs, rather than the increase being due to the effects of the UMP.  Nevertheless, if the latter is believed to be the case, it would be recommended that further investigation into this matter be carried out in future, in order to determine if the UMP has affected leakage.
+
+# **Results**
+
+## **Leakage Detection Effort**
+
+### **Leakage Detection Effort by DMA Classification Category**
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE, results = 'hide'}
+
+setkey(leakage.detection.effort, DMA.Code)
+setkey(dma.lookup, DMA.Code)
+
+leakage.detection.effort <- dma.lookup[leakage.detection.effort, ][!is.na(DMA.Description)][substr(as.character(Completion.D.Date), nchar(as.character(Completion.D.Date)) - 3, nchar(as.character(Completion.D.Date))) %in% c(2016, 2017)]
+effort.by.dma <- leakage.detection.effort[, .(Actual.Labour.Hours = sum(Actual.Labour.Hours)), by = .(DMA.Code, DMA.Description)]
+
+dma.classification1 <- dma.classification[, .(DMA.Code,Category, 
+                                             Percentage.Change = ((Average_Nightflow_2018 / Average_Nightflow_2015) - 1) * 100, 
+                                             Absolute.Change = Average_Nightflow_2018 - Average_Nightflow_2015)][!is.na(Percentage.Change)]
+
+setkey(effort.by.dma, DMA.Code)
+setkey(dma.classification1, DMA.Code)
+effort.by.dma <- effort.by.dma[dma.classification1][!is.na(DMA.Description)]
+
+effort.by.dma[, sum(Actual.Labour.Hours) / .N, by = Category]
+#effort.by.dma$Hours.Category <- round(effort.by.dma$Actual.Labour.Hours, -2)
+effort.by.dma
+
+setkey(effort.by.dma, Actual.Labour.Hours)
+effort.by.dma$Decile <- ceiling(((1:nrow(effort.by.dma)) / nrow(effort.by.dma)) * 10)
+setkey(effort.by.dma, DMA.Code)
+
+decile.summary <- effort.by.dma[, .(Average.Percentage.Change = sum(Percentage.Change) / .N), by = .(Decile)]
+setkey(decile.summary, Decile)
+
+decile.summary2 <- effort.by.dma[, .(Average.Percentage.Change = sum(Percentage.Change) / .N, Total.DMAs = .N), by = .(Decile, Category)]
+setkey(decile.summary, Decile)
+
+```
+
+Initially, the total hours of Leakage Detection Effort (in the calendar years of 2016 and 2017) were compared to the change in the average monthly Nightflow in the same DMA in the calendar years either side of this (2015 and 2018).  This comparison is plotted below, also including the classification of DMAs into Creeper, Jumper and Stable / Other as described above.  Outliers have been removed for clarity.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+effort.by.dma$Category <- fct_relevel(effort.by.dma$Category, "Jumper - Increase", "Creeper - Increase", "Stable", "Creeper - Decrease", "Jumper - Decrease", "Other", "Insufficient Data")
+
+annotations <- data.frame(
+        xpos = c(-Inf,-Inf,Inf,Inf),
+        ypos =  c(-Inf, Inf,-Inf,Inf),
+        annotateText = c("Decrease due to other causes?", "Increase due to Less Effort?", "Decrease With Effort", "Increase Despite Effort"),
+        hjustvar = c(0, 0, 1, 1) ,
+        vjustvar = c(-0.5, 1.2, -0.5, 1.2))
+
+ggplot(effort.by.dma, aes(Actual.Labour.Hours, Absolute.Change)) + geom_point(aes(colour = Category)) + 
+         theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + gg + scale_x_continuous(name = "Actual Labour Hours", limits = c(0, 1500)) + scale_y_continuous(name = "Leakage Change (2015 to 2018)", limits = c(-10000, 20000)) + scale_color_manual(values=c("red3","orange2","gold1","forestgreen","blue3","gray90","grey")) + 
+         labs(title = "DMA Leakage Detection Effort compared to Leakage Change") + geom_hline(yintercept = 0, colour = "darkred") + geom_vline(xintercept = 500, colour = "darkred") + geom_text(data=annotations,aes(x=xpos,y=ypos,hjust=hjustvar,vjust=vjustvar,label=annotateText))
+
+```
+
+It is particularly notable that there are a number of Creeper - Increase DMAs with a relatively high Nightflow increase but a relatively small amount of detection effort.  The situation is more generally visualised below; this divides DMAs into deciles based on total Labour Hours, from lowest to highest.  While it appears that a large amount of effort is invested in the DMAs for which a large increase in Nightflow is observed, there is some evidence to suggest that Nightflow increases to a lesser extent when more detection effort is invested in a DMA.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+ggplot(decile.summary, aes(Decile, Average.Percentage.Change)) + geom_bar(stat = "identity", fill = "grey", color = "black") + gg + scale_x_continuous(name = "Total Labour Hours Decile (Low to High)", breaks = c(1:10)) + scale_y_continuous(name = "Average Percentage Nightflow Change (2015 to 2018)") + labs(title = "DMA Leakage Detection Effort compared to Leakage Change - Grouped")
+
+```
+
+The distribution of DMAs, according to their assigned classification category, is shown below.  There is some evidence to suggest correlation between Creeper DMAs and their relative Leakage Detection Effort.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+decile.summary2$Category <- fct_relevel(decile.summary2$Category, "Jumper - Increase", "Creeper - Increase", "Stable", "Creeper - Decrease", "Jumper - Decrease", "Other", "Insufficient Data")
+
+ggplot(decile.summary2, aes(Decile, Total.DMAs), position = "dodge") + geom_bar(aes(fill = Category), stat = "identity") + gg + scale_x_continuous(name = "Total Labour Hours Decile (Low to High)", breaks = c(1:10)) + scale_y_continuous(name = "Total DMAs by Category") + scale_fill_manual(values=c("red3","orange2","gold1","forestgreen","blue3","gray90","grey")) + 
+         labs(title = "DMA Decile Distribution by Classification Category")
+
+```
+
+### **Leakage Detection Effort by DMA Material Composition**
+
+For comparison, the above analysis is repeated, using the DMA Material Composition categories, as derived in Hypothesis 3, in place of the DMA Classifications based on leakage change behaviour.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE, results = 'hide'}
+
+setkey(leakage.detection.effort, DMA.Code)
+setkey(dma.lookup, DMA.Code)
+
+leakage.detection.effort <- dma.lookup[leakage.detection.effort, ][!is.na(DMA.Description)][substr(as.character(Completion.D.Date), nchar(as.character(Completion.D.Date)) - 3, nchar(as.character(Completion.D.Date))) %in% c(2016, 2017)]
+effort.by.dma <- leakage.detection.effort[, .(Actual.Labour.Hours = sum(Actual.Labour.Hours)), by = .(DMA.Code, DMA.Description)]
+
+dma.classification2 <- dma.classification[, .(DMA.Code,Material_profile, 
+                                             Percentage.Change = ((Average_Nightflow_2018 / Average_Nightflow_2015) - 1) * 100, 
+                                             Absolute.Change = Average_Nightflow_2018 - Average_Nightflow_2015)][!is.na(Percentage.Change)]
+
+setkey(effort.by.dma, DMA.Code)
+setkey(dma.classification2, DMA.Code)
+effort.by.dma <- effort.by.dma[dma.classification2][!is.na(DMA.Description)]
+
+effort.by.dma[, sum(Actual.Labour.Hours) / .N, by = Material_profile]
+#effort.by.dma$Hours.Category <- round(effort.by.dma$Actual.Labour.Hours, -2)
+effort.by.dma
+
+setkey(effort.by.dma, Actual.Labour.Hours)
+effort.by.dma$Decile <- ceiling(((1:nrow(effort.by.dma)) / nrow(effort.by.dma)) * 10)
+setkey(effort.by.dma, DMA.Code)
+
+decile.summary <- effort.by.dma[, .(Average.Percentage.Change = ((sum(Percentage.Change) / .N) - 1) * 100), by = .(Decile)]
+setkey(decile.summary, Decile)
+
+decile.summary2 <- effort.by.dma[, .(Average.Percentage.Change = ((sum(Percentage.Change) / .N) - 1) * 100, Total.DMAs = .N), by = .(Decile, Material_profile)]
+setkey(decile.summary, Decile)
+
+```
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+effort.by.dma$Category <- fct_relevel(effort.by.dma$Material_profile, "Jumper - Increase", "Creeper - Increase", "Stable", "Creeper - Decrease", "Jumper - Decrease", "Other", "Insufficient Data")
+
+ggplot(na.omit(effort.by.dma), aes(Actual.Labour.Hours, Absolute.Change)) + geom_point(aes(colour = Material_profile)) + 
+         theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position = "bottom") + gg + scale_x_continuous(name = "Actual Labour Hours", limits = c(0, 1500)) + scale_y_continuous(name = "Leakage Change (2015 to 2018)", limits = c(-10000, 20000)) + scale_color_manual(values=SEAMScolours[c(2,4,5,7)]) + 
+         labs(title = "DMA Leakage Detection Effort compared to Leakage Change")
+
+```
+
+It should be noted that DMA material compositions are not available for every DMA, and therefore, not every DMA included in the Leakage Detection Effort Analysis is included below.
+
+```{r echo=FALSE, fig.width=8, message=FALSE, warning=FALSE}
+
+
+ggplot(na.omit(decile.summary2), aes(Decile, Total.DMAs), position = "dodge") + geom_bar(aes(fill = Material_profile), stat = "identity") + scale_x_continuous(name = "Total Labour Hours Decile (Low to High)", breaks = c(1:10)) + gg + scale_y_continuous(name = "Total DMAs by Material Profile") + scale_fill_manual(values=SEAMScolours[c(2,4,5,7)]) + 
+         labs(title = "DMA Decile Distribution by Classification Material Profile",
+              fill = "Material Profile")
+
+```
+
+
+
+
+
+# **Recommendations**
+
+These results are based on a relatively small sample size, however, there is some evidence to suggest that Detection Effort has an effect on leakage.  Therefore, further investigations into this matter are recommended.
+
+There is some evidence to suggest that an increasing quantity of mains replacement in a DMA may suppress leakage increases, however, additional data may allow this investigation to be extended in the future.  In particular, it may be of interest to investigate the proportion of DMA replacement in addition to the quantity, in order to quantify the comparitive benefits of full and partial DMA replacement.
+
+In addition, if the investigation into the UMP is to be continued, it will be necessary to make use of Nightflow data corresponding to the UMP timeframe, i.e. dating back to 2010 or earlier.  However, there does appear to be some evidence to suggest that the UMP affected the allocation of resource to Comms Pipes Jobs, and further investigation into this matter is recommended.
